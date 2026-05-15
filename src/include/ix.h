@@ -90,6 +90,21 @@ namespace PeterDB {
         // Put the current counter values of associated PF FileHandles into variables
         RC collectCounterValues(unsigned &readPageCount, unsigned &writePageCount, unsigned &appendPageCount);
 
+        // wrap a pfm handle
+        FileHandle fileHandle;
+        PageNum rootPageNum; // 0 means empty tree
+        bool isOpen;
+
+        // page I/O updates ix counters
+        RC readPage(PageNum pageNum, void *data);
+        RC writePage(PageNum pageNum, const void *data);
+        RC appendPage(const void *data);
+        unsigned getNumberOfPages();
+
+        // manage hidden page
+        RC readHiddenPage(); // load rootPageNum + counters from page 0
+        RC writeHiddenPage(); // flush rootPageNum + counters to page 0
+
     };
 }// namespace PeterDB
 #endif // _ix_h_
