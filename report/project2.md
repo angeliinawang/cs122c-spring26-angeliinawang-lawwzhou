@@ -137,9 +137,11 @@ If a slot points at a record whose first byte is `TOMBSTONE_FLAG`, the iterator 
 ### 8. Member contribution (for team of two)
 - Explain how you distribute the workload in team.
 
-**Angelina Wang:**
+**Angelina Wang:**: Finished Catalog functions in RM
 
-**Lawrence Zhou:**
+**Lawrence Zhou:**: Finished RBFM, updateRecord, Scan, ScanIterator, getNextRecord
+
+**Both**: Finished wrapper functions for allowing RM to use RBFM functions for all the tuple methods
 
 
 ### 9. Other (optional)
