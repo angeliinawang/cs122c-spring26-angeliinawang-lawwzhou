@@ -31,7 +31,7 @@ namespace PeterDB {
     }
 
     RC IndexManager::openFile(const std::string &fileName, IXFileHandle &ixFileHandle) {
-        if (!ixFileHandle.isOpen) return -1;
+        if (ixFileHandle.isOpen) return -1;
 
         auto &pfm = PagedFileManager::instance();
         if (pfm.openFile(fileName, ixFileHandle.fileHandle) != 0) return -1;
@@ -54,6 +54,7 @@ namespace PeterDB {
 
     RC
     IndexManager::insertEntry(IXFileHandle &ixFileHandle, const Attribute &attribute, const void *key, const RID &rid) {
+        
         return -1;
     }
 

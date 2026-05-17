@@ -317,8 +317,8 @@ namespace PeterDB {
             memcpy(&column_position, p, 4);
             p += 4;
             posColumns.push_back(std::make_pair(column_position, Attribute{colName, (AttrType)column_type, (AttrLength)column_length}));
-            //unfinished but basically building the recordescriptor, need to sort by position after
         }
+        // sort positions are not always in order
         std::sort(posColumns.begin(), posColumns.end(), [](const std::pair<int, Attribute> &a, const std::pair<int, Attribute> &b) {
             return a.first < b.first;
         });
@@ -330,6 +330,7 @@ namespace PeterDB {
         return 0;
     }
 
+    // eveything below this is lowkey the same, make sure they dont edit the metadata tbales, get attributes and call rbfm function
     RC RelationManager::insertTuple(const std::string &tableName, const void *data, RID &rid) {
         if (tableName == "Tables" || tableName == "Columns") return -1;
         auto &rbfm = RecordBasedFileManager::instance();
@@ -500,7 +501,7 @@ namespace PeterDB {
             {"column-length", TypeInt, 4},
             {"column-position", TypeInt, 4}
         };
-    }
+    }   
 
     void RelationManager::serializeTablesRow(char* buf, int tableId, const std::string &tableName,
                                 const std::string &fileName) {
