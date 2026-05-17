@@ -9,6 +9,23 @@
 
 # define IX_EOF (-1)  // end of the index scan
 
+/*
+Structure of the index
+
+Page Metadata: 
+4 bytes for leaf or middle node flag | 4 bytes for number of keys | 4 bytes for free space offset | LEAF ONLY: pointer to next leaf page
+We need the free space offset only for varchar because the varchars can be diff lengths, but int and reals
+will always be the same
+
+Actual Data for Intermediatary Nodes:
+4 bytes for the first pointer | X bytes for the key | 4 bytes for the next pointer | X bytes for the next key | ...
+We need a pointer before and not only just after since everything less than the key will be at the first pointer
+everything greater will be at the next
+
+Actual Data for Leaf Nodes:
+X bytes for the key | RID ( 4 bytes for page number, 4 bytes for slot number)
+*/
+
 namespace PeterDB {
     class IX_ScanIterator;
 
