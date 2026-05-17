@@ -76,17 +76,25 @@ namespace PeterDB {
     IndexManager::insertEntry(IXFileHandle &ixFileHandle, const Attribute &attribute, const void *key, const RID &rid) {
         // first if our tree is empty we have to update the root
         if (ixFileHandle.rootPageNum == 0) {
+            char newRootPage[PAGE_SIZE] = {0};
+            int node = LEAF_NODE;
+            int numKeys = 0;
+            int freeSpaceOffset = METADATA_SIZE;
+            int next = 0;
+            memcpy(&newRootPage, &node, 4);
+            memcpy(&newRootPage, &numKeys, 8);
+            memcpy(&newRootPage, &freeSpaceOffset, 12);
+            memcpy(&newRootPage, &next, 16);
             
+            ixFileHandle.appendPage(newRootPage);
+            ixFileHandle.rootPageNum = ixFileHandle.getNumberOfPages() - 1;
         }
-        else {
-            // traverse from the root to the leaf where we can insert
-            void *newChildKey = nullptr;
-            PageNum newChildPage = 0;
-            // insert will recursively go down until it finds a spot to place, if there is a split it handles it
-            insert(ixFileHandle.rootPageNum, attribute, key, rid, newChildKey, newChildPage);
-            // if newChildKey and newChildPage come back with values it means we need to create a new root since it got split
-            
-        }
+        // traverse from the root to the leaf where we can insert
+        void *newChildKey = nullptr;
+        PageNum newChildPage = 0;
+        // insert will recursively go down until it finds a spot to place, if there is a split it handles it
+        insert(ixFileHandle.rootPageNum, attribute, key, rid, newChildKey, newChildPage);
+        // if newChildKey and newChildPage come back with values it means we need to create a new root since it got split
         return 0;
     }
 

@@ -8,6 +8,9 @@
 #include "rbfm.h" // for some type declarations only, e.g., RID and Attribute
 
 # define IX_EOF (-1)  // end of the index scan
+# define METADATA_SIZE 16 // header for the index pages
+# define INTERNAL_NODE 0
+# define LEAF_NODE 1
 
 /*
 Structure of the index
