@@ -52,10 +52,42 @@ namespace PeterDB {
         return 0;
     }
 
+    RC insert(PageNum pageNum, const Attribute &attribute, const void *key, const RID &rid, void *newChildKey, PageNum newChildPage) {
+        // following the algorithm from the slides
+
+        // if the node is a leaf node
+        // if there is space
+        // insert the the value into the correct spot and shift everything else over
+        // if there is no space, you have to split aka make a new page and move half over
+        //and pass the newChildKey and newChildPage back up
+
+        // update the metadata
+
+
+
+        // if the node is an internal node
+        // keep going down until you find the correct leaf node to insert into
+        // if newChildKey and newChildPage come back with values, you have to insert that into this internal node
+        // if there's a split repeat and pass back up
+        return 0;
+    }
+
     RC
     IndexManager::insertEntry(IXFileHandle &ixFileHandle, const Attribute &attribute, const void *key, const RID &rid) {
-        
-        return -1;
+        // first if our tree is empty we have to update the root
+        if (ixFileHandle.rootPageNum == 0) {
+            
+        }
+        else {
+            // traverse from the root to the leaf where we can insert
+            void *newChildKey = nullptr;
+            PageNum newChildPage = 0;
+            // insert will recursively go down until it finds a spot to place, if there is a split it handles it
+            insert(ixFileHandle.rootPageNum, attribute, key, rid, newChildKey, newChildPage);
+            // if newChildKey and newChildPage come back with values it means we need to create a new root since it got split
+            
+        }
+        return 0;
     }
 
     RC

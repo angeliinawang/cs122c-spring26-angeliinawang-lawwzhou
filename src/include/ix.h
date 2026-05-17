@@ -13,7 +13,7 @@
 Structure of the index
 
 Page Metadata: 
-4 bytes for leaf or middle node flag | 4 bytes for number of keys | 4 bytes for free space offset | LEAF ONLY: pointer to next leaf page
+4 bytes for leaf or middle node flag | 4 bytes for number of keys | 4 bytes for free space offset | LEAF ONLY: pointer to next leaf page (unused for internal)
 We need the free space offset only for varchar because the varchars can be diff lengths, but int and reals
 will always be the same
 
@@ -47,6 +47,8 @@ namespace PeterDB {
 
         // Close an ixFileHandle for an index.
         RC closeFile(IXFileHandle &ixFileHandle);
+
+        RC insert(PageNum pageNum, const Attribute &attribute, const void *key, const RID &rid, void *newChildKey, PageNum newChildPage);
 
         // Insert an entry into the given index that is indicated by the given ixFileHandle.
         RC insertEntry(IXFileHandle &ixFileHandle, const Attribute &attribute, const void *key, const RID &rid);
