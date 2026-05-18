@@ -98,9 +98,29 @@ namespace PeterDB {
         return 0;
     }
 
+    RC del(const int &pageNum, IXFileHandle &ixFileHandle, const Attribute &attribute, const void *key, const RID &rid) {
+        // if pageNum page is a leaf,
+            // scan entries for matching (key, RID) -> if not found return -1
+            // shift entries left, decrement numkeys and spaceoffset, write page
+            // if numkeys < min, signal underflow to caller
+        
+        // else
+            // find which child covers key K, recurse into it
+            // if child signaled underflow
+                // distribute with left or right sibling
+                // else
+                    // merge with sibling and remove into separate key from this node
+                    // if removing key makes node drop below win, signal underflow upwards
+        return 0;
+    }
+
     RC
     IndexManager::deleteEntry(IXFileHandle &ixFileHandle, const Attribute &attribute, const void *key, const RID &rid) {
-        return -1;
+        // check if tree is empty, if so don't delete
+        
+        // traverse from root to find the leaf node
+        // delete the entry
+        // OPTIONAL: rebalance tree? lowkey might do this i feel like it'll be easy and i'm bored
     }
 
     RC IndexManager::scan(IXFileHandle &ixFileHandle,

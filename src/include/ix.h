@@ -55,6 +55,8 @@ namespace PeterDB {
 
         // Insert an entry into the given index that is indicated by the given ixFileHandle.
         RC insertEntry(IXFileHandle &ixFileHandle, const Attribute &attribute, const void *key, const RID &rid);
+        
+        RC del(IXFileHandle &ixFileHandle, const Attribute &attribute, const void *key, const RID &rid);
 
         // Delete an entry from the given index that is indicated by the given ixFileHandle.
         RC deleteEntry(IXFileHandle &ixFileHandle, const Attribute &attribute, const void *key, const RID &rid);
