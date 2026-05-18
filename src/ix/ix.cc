@@ -52,21 +52,25 @@ namespace PeterDB {
         return 0;
     }
 
-    RC insertWithSpace(IXFileHandle &ixFileHandle, const Attribute &attribute, const void *key, const RID &rid, void *&newChildKey, PageNum &newChildPage, char (&page)[PAGE_SIZE],
+    RC insertWithSpace(IXFileHandle &ixFileHandle, const Attribute &attribute, const PageNum &pageNum, const void *key, const RID &rid, char (&page)[PAGE_SIZE],
  int numKeys, int freeSpaceOffset) {
         char *dataStart = page + METADATA_SIZE;
         int insertSpot = numKeys;
+        int entrySize;
         if (attribute.type == TypeVarChar) {
+            int len;
+            memcpy(&len, key, 4);
+            entrySize = len + 4 + RID_SIZE;
                 // to do: insert varchar logic
                 // different because we have to convert key to length plus str
                 // have to read lengths in order to iterate through
         }
         else {
-
+            entrySize = KEY_SIZE + RID_SIZE;
             for (int i = 0; i < numKeys; i++) {
                 if (attribute.type == TypeInt) {
                     int newKey = *(int*)key;
-                    int currentKey = *(int*)(dataStart + i * 12);
+                    int currentKey = *(int*)(dataStart + i * (KEY_SIZE + RID_SIZE));
                     if (newKey < currentKey) {
                         insertSpot = i;
                         break;
@@ -74,18 +78,26 @@ namespace PeterDB {
                 }
                 else if (attribute.type == TypeReal) {
                     float newKey = *(float*)key;
-                    float currentKey = *(float*)(dataStart + i * 12);
+                    float currentKey = *(float*)(dataStart + i * (KEY_SIZE + RID_SIZE));
                     if (newKey < currentKey) {
                         insertSpot = i;
                         break;
                     }
                 }
-                // to do: implement the insert part with memove
-                // update page metadata
             }
+            char *insertptr = dataStart + insertSpot * entrySize;
+            char *dataEnd = page + freeSpaceOffset;
+            int bytes = dataEnd - insertptr;
+            memmove(insertptr + entrySize, insertptr, bytes);
+            memcpy(insertptr, key, 4);
+            memcpy(insertptr + 4, &rid.pageNum, 4);
+            memcpy(insertptr + 8, &rid.slotNum, 2);
         }
-        char *insertptr = page + insertSpot;
-        
+        // update page metadata
+        numKeys += 1;
+        freeSpaceOffset += entrySize;
+        memcpy(page + 4, &numKeys, 4);
+        memcpy(page + 8, &freeSpaceOffset, 4);
         return 0;
     }
 
@@ -117,7 +129,7 @@ namespace PeterDB {
             // if there is space
             if (keySize + freeSpaceOffset + RID_SIZE <= PAGE_SIZE) {
                 // insert the the value into the correct spot and shift everything else over
-                if (!insertWithSpace(ixFileHandle, attribute, key, rid, newChildKey, newChildPage, page, numKeys, freeSpaceOffset)) return -1;
+                if (insertWithSpace(ixFileHandle, attribute, pageNum, key, rid, page, numKeys, freeSpaceOffset) != 0) return -1;
             }
             // if there's NO SPACE SPLIT and pass back up
             // if there is no space, you have to split aka make a new page and move half over
@@ -131,6 +143,9 @@ namespace PeterDB {
             // keep going down until you find the correct leaf node to insert into
             // if newChildKey and newChildPage come back with values, you have to insert that into this internal node
         else {
+            // choose subtree
+            // recursively insert
+            // check childEntry in case of split below
 
         }
         return 0;

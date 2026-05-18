@@ -11,7 +11,8 @@
 # define METADATA_SIZE 16 // header for the index pages
 # define INTERNAL_NODE 0
 # define LEAF_NODE 1
-# define RID_SIZE 8
+# define RID_SIZE 6 // 4 for page number 2 for slot number
+# define KEY_SIZE 4
 
 /*
 Structure of the index
@@ -27,7 +28,15 @@ We need a pointer before and not only just after since everything less than the 
 everything greater will be at the next
 
 Actual Data for Leaf Nodes:
-X bytes for the key | RID ( 4 bytes for page number, 4 bytes for slot number)
+X bytes for the key | RID ( 4 bytes for page number, 2 bytes for slot number)
+
+TO DO LIST: 
+- inserting with space, varchar (LEAF NODE)
+- splitting bc no space, int and varchar (LEAF NODE)
+- traversing down thru pointers to find insert position (INTERNAL NODE)
+- handle new child coming back up AKA insert into internal node (INTERNAL NODE)
+- inserting with space, varchar (INTERNAL NODE)
+- splitting bc no space, int and varchar (INTERNAL NODE)
 */
 
 namespace PeterDB {
