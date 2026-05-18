@@ -11,6 +11,7 @@
 # define METADATA_SIZE 16 // header for the index pages
 # define INTERNAL_NODE 0
 # define LEAF_NODE 1
+# define RID_SIZE 8
 
 /*
 Structure of the index

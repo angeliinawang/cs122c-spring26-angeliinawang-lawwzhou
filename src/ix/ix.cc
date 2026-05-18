@@ -52,24 +52,83 @@ namespace PeterDB {
         return 0;
     }
 
-    RC insert(PageNum pageNum, const Attribute &attribute, const void *key, const RID &rid, void *newChildKey, PageNum newChildPage) {
+    RC insert(IXFileHandle &ixFileHandle, PageNum pageNum, const Attribute &attribute, const void *key, const RID &rid, void *&newChildKey, PageNum &newChildPage) {
         // following the algorithm from the slides
 
         // if the node is a leaf node
-        // if there is space
-        // insert the the value into the correct spot and shift everything else over
-        // if there is no space, you have to split aka make a new page and move half over
-        //and pass the newChildKey and newChildPage back up
+        char page[4096];
+        ixFileHandle.readPage(pageNum, page);
+        int flag;
+        int numKeys;
+        int freeSpaceOffset;
+        int next;
+        char *pageptr = page;
+        memcpy(&flag, pageptr, 4);
+        memcpy(&numKeys, pageptr + 4, 4);
+        memcpy(&freeSpaceOffset, pageptr + 8, 4);
+        memcpy(&next, pageptr + 12, 4);
 
-        // update the metadata
+        
+        if (flag == LEAF_NODE) {
+            // differentiate ints and reals vs varchars to calculate space needed
+            int keySize; 
+            if (attribute.type == TypeVarChar) {
+                memcpy(&keySize, key, 4);
+                keySize += 4;
+            }
+            else {
+                keySize = 4;
+            }
+            // if there is space
+            if (keySize + freeSpaceOffset + RID_SIZE <= PAGE_SIZE) {
+                // insert the the value into the correct spot and shift everything else over
+                if (attribute.type == TypeVarChar) {
+                    // to do: insert varchar logic
+                }
+                else {
+                    char *dataStart = page + METADATA_SIZE;
+                    int insertSpot = numKeys;
+                    for (int i = 0; i < numKeys; i++) {
+                        if (attribute.type == TypeInt) {
+                            int newKey = *(int*)key;
+                            int currentKey = *(int*)(dataStart + i * 12);
+                            if (newKey < currentKey) {
+                                insertSpot = i;
+                                break;
+                            }
+                        }
+                        else if (attribute.type == TypeReal) {
+                            float newKey = *(float*)key;
+                            float currentKey = *(float*)(dataStart + i * 12);
+                            if (newKey < currentKey) {
+                                insertSpot = i;
+                                break;
+                            }
+                        }
+                        // to do: implement the insert part with memove
+                    }
 
+                }
+                
+            }
+            // if there's NO SPACE SPLIT and pass back up
+            // if there is no space, you have to split aka make a new page and move half over
+            //and pass the newChildKey and newChildPage back up
 
+            // update the metadata
 
+            else {
+
+            }
+        }
         // if the node is an internal node
-        // keep going down until you find the correct leaf node to insert into
-        // if newChildKey and newChildPage come back with values, you have to insert that into this internal node
-        // if there's a split repeat and pass back up
+            // keep going down until you find the correct leaf node to insert into
+            // if newChildKey and newChildPage come back with values, you have to insert that into this internal node
+        else {
+
+        }
         return 0;
+
     }
 
     RC
@@ -81,10 +140,11 @@ namespace PeterDB {
             int numKeys = 0;
             int freeSpaceOffset = METADATA_SIZE;
             int next = 0;
-            memcpy(&newRootPage, &node, 4);
-            memcpy(&newRootPage, &numKeys, 8);
-            memcpy(&newRootPage, &freeSpaceOffset, 12);
-            memcpy(&newRootPage, &next, 16);
+            char *pageptr = newRootPage;
+            memcpy(pageptr, &node, 4);
+            memcpy(pageptr + 4, &numKeys, 4);
+            memcpy(pageptr + 8, &freeSpaceOffset, 4);
+            memcpy(pageptr + 12, &next, 4);
             
             ixFileHandle.appendPage(newRootPage);
             ixFileHandle.rootPageNum = ixFileHandle.getNumberOfPages() - 1;
@@ -93,8 +153,12 @@ namespace PeterDB {
         void *newChildKey = nullptr;
         PageNum newChildPage = 0;
         // insert will recursively go down until it finds a spot to place, if there is a split it handles it
-        insert(ixFileHandle.rootPageNum, attribute, key, rid, newChildKey, newChildPage);
+        insert(ixFileHandle, ixFileHandle.rootPageNum, attribute, key, rid, newChildKey, newChildPage);
+
         // if newChildKey and newChildPage come back with values it means we need to create a new root since it got split
+        if (newChildKey != nullptr) {
+            
+        }
         return 0;
     }
 
