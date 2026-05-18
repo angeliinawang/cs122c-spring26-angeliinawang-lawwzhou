@@ -52,11 +52,48 @@ namespace PeterDB {
         return 0;
     }
 
+    RC insertWithSpace(IXFileHandle &ixFileHandle, const Attribute &attribute, const void *key, const RID &rid, void *&newChildKey, PageNum &newChildPage, char (&page)[PAGE_SIZE],
+ int numKeys, int freeSpaceOffset) {
+        char *dataStart = page + METADATA_SIZE;
+        int insertSpot = numKeys;
+        if (attribute.type == TypeVarChar) {
+                // to do: insert varchar logic
+                // different because we have to convert key to length plus str
+                // have to read lengths in order to iterate through
+        }
+        else {
+
+            for (int i = 0; i < numKeys; i++) {
+                if (attribute.type == TypeInt) {
+                    int newKey = *(int*)key;
+                    int currentKey = *(int*)(dataStart + i * 12);
+                    if (newKey < currentKey) {
+                        insertSpot = i;
+                        break;
+                    }
+                }
+                else if (attribute.type == TypeReal) {
+                    float newKey = *(float*)key;
+                    float currentKey = *(float*)(dataStart + i * 12);
+                    if (newKey < currentKey) {
+                        insertSpot = i;
+                        break;
+                    }
+                }
+                // to do: implement the insert part with memove
+                // update page metadata
+            }
+        }
+        char *insertptr = page + insertSpot;
+        
+        return 0;
+    }
+
     RC insert(IXFileHandle &ixFileHandle, PageNum pageNum, const Attribute &attribute, const void *key, const RID &rid, void *&newChildKey, PageNum &newChildPage) {
         // following the algorithm from the slides
 
         // if the node is a leaf node
-        char page[4096];
+        char page[PAGE_SIZE];
         ixFileHandle.readPage(pageNum, page);
         int flag;
         int numKeys;
@@ -67,8 +104,6 @@ namespace PeterDB {
         memcpy(&numKeys, pageptr + 4, 4);
         memcpy(&freeSpaceOffset, pageptr + 8, 4);
         memcpy(&next, pageptr + 12, 4);
-
-        
         if (flag == LEAF_NODE) {
             // differentiate ints and reals vs varchars to calculate space needed
             int keySize; 
@@ -82,41 +117,12 @@ namespace PeterDB {
             // if there is space
             if (keySize + freeSpaceOffset + RID_SIZE <= PAGE_SIZE) {
                 // insert the the value into the correct spot and shift everything else over
-                if (attribute.type == TypeVarChar) {
-                    // to do: insert varchar logic
-                }
-                else {
-                    char *dataStart = page + METADATA_SIZE;
-                    int insertSpot = numKeys;
-                    for (int i = 0; i < numKeys; i++) {
-                        if (attribute.type == TypeInt) {
-                            int newKey = *(int*)key;
-                            int currentKey = *(int*)(dataStart + i * 12);
-                            if (newKey < currentKey) {
-                                insertSpot = i;
-                                break;
-                            }
-                        }
-                        else if (attribute.type == TypeReal) {
-                            float newKey = *(float*)key;
-                            float currentKey = *(float*)(dataStart + i * 12);
-                            if (newKey < currentKey) {
-                                insertSpot = i;
-                                break;
-                            }
-                        }
-                        // to do: implement the insert part with memove
-                    }
-
-                }
-                
+                if (!insertWithSpace(ixFileHandle, attribute, key, rid, newChildKey, newChildPage, page, numKeys, freeSpaceOffset)) return -1;
             }
             // if there's NO SPACE SPLIT and pass back up
             // if there is no space, you have to split aka make a new page and move half over
             //and pass the newChildKey and newChildPage back up
-
             // update the metadata
-
             else {
 
             }
