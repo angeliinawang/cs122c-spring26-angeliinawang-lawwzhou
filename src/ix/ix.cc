@@ -98,7 +98,7 @@ namespace PeterDB {
         return 0;
     }
 
-    RC del(const int &pageNum, IXFileHandle &ixFileHandle, const Attribute &attribute, const void *key, const RID &rid) {
+    RC del(IXFileHandle &ixFileHandle, PageNum pageNum, const Attribute &attribute, const void *key, const RID &rid, bool &underflow) {
         // if pageNum page is a leaf,
             // scan entries for matching (key, RID) -> if not found return -1
             // shift entries left, decrement numkeys and spaceoffset, write page
@@ -117,10 +117,30 @@ namespace PeterDB {
     RC
     IndexManager::deleteEntry(IXFileHandle &ixFileHandle, const Attribute &attribute, const void *key, const RID &rid) {
         // check if tree is empty, if so don't delete
+        if (ixFileHandle.rootPageNum == 0) return -1;
         
         // traverse from root to find the leaf node
+        bool underflow = false;
+        if (del(ixFileHandle, ixFileHandle.rootPageNum, attribute, key, rid, underflow) != 0) {
+            return -1;
+        }
         // delete the entry
-        // OPTIONAL: rebalance tree? lowkey might do this i feel like it'll be easy and i'm bored
+        char rootBuf[PAGE_SIZE];
+        if (ixFileHandle.readPage(ixFileHandle.rootPageNum, rootBuf) != 0) return -1;
+
+        int nodeType, numKeys;
+        memcpy(&nodeType, rootBuf, 4);
+        memcpy(&numKeys, rootBuf + 4, 4);
+
+        if (nodeType == LEAF_NODE && numKeys == 0) {
+            ixFileHandle.rootPageNum = 0;
+        } else if (nodeType == INTERNAL_NODE && numKeys == 0) {
+            PageNum onlyChild;
+            memcpy(&onlyChild, rootBuf + METADATA_SIZE, sizeof(PageNum));
+            ixFileHandle.rootPageNum = onlyChild;
+        }
+        
+        return 0;
     }
 
     RC IndexManager::scan(IXFileHandle &ixFileHandle,
@@ -134,6 +154,7 @@ namespace PeterDB {
     }
 
     RC IndexManager::printBTree(IXFileHandle &ixFileHandle, const Attribute &attribute, std::ostream &out) const {
+        return 0;
     }
 
     IX_ScanIterator::IX_ScanIterator() {
