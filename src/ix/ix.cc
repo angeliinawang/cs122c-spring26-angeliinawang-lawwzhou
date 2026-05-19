@@ -311,19 +311,166 @@ namespace PeterDB {
     }
 
     RC del(IXFileHandle &ixFileHandle, PageNum pageNum, const Attribute &attribute, const void *key, const RID &rid, bool &underflow) {
+        char page[PAGE_SIZE];
+        if (ixFileHandle.readPage(pageNum, page) != 0) return -1;
+
+        int flag, numKeys, freeSpaceOffset, next;
+        memcpy(&flag, page, 4);
+        memcpy(&numKeys, page + 4, 4);
+        memcpy(&freeSpaceOffset, page + 8, 4);
+        memcpy(&next, page + 12, 4);
+
         // if pageNum page is a leaf,
-            // scan entries for matching (key, RID) -> if not found return -1
-            // shift entries left, decrement numkeys and spaceoffset, write page
+        if (flag == LEAF_NODE) {
+            int entryOffset = findLeafEntry(attribute, page, numKeys, key, rid);
+            if (entryOffset < 0) return -1; // entry not found
+
+            int entrySize = leafEntrySize(attribute, page + entryOffset); // # of bytes to remove
+            int remBytes = freeSpaceOffset - (entryOffset + entrySize);
+            memmove(page + entryOffset, page + entryOffset + entrySize, remBytes); // shift entries left, decrement numkeys and spaceoffset, write page
+
+            numKeys -= 1;
+            freeSpaceOffset -= entrySize;
+            memcpy(page + 4, &numKeys, 4);
+            memcpy(page + 8, &freeSpaceOffset, 4);
+
+            if (ixFileHandle.writePage(pageNum, page) != 0) return -1;
             // if numkeys < min, signal underflow to caller
+            if (freeSpaceOffset - METADATA_SIZE < MIN_DATA_BYTES) underflow = true;
+
+            return 0;
+        }
         
-        // else
-            // find which child covers key K, recurse into it
-            // if child signaled underflow
-                // distribute with left or right sibling
-                // else
+        // internal node
+        // find which child covers key K, recurse into it
+        int childIdx = findInternalChildIds(attribute, page, numKeys, key);
+        PageNum childPage;
+        int childPtrOffset = METADATA_SIZE; // offset of the idx-th child pointer
+        if (attribute.type == TypeVarChar) {
+            if (childIdx == 0) {
+                childPtrOffset = METADATA_SIZE;
+            } else {
+                char *p = page + METADATA_SIZE + 4; // skip ptr0
+                for (int i = 0; i < childIdx; i++) {
+                    int currentLen;
+                    memcpy(&currentLen, p, 4);
+                    p += 4 + currentLen + 4; // skip this key + next pointer
+                }
+                childPtrOffset = METADATA_SIZE + childIdx * (KEY_SIZE + 4);
+            }
+        }
+
+        memcpy(&childPage, page + childPtrOffset, 4);
+
+        // RECURSIVE PART
+        bool childUnderflow = false;
+        if (del(ixFileHandle, childPage, attribute, key, rid, childUnderflow) != 0) return -1;
+        if (!childUnderflow) return 0; // we done, no redistribution needed
+        
+        // if child signaled underflow
+        if (redistributeOrMergeEntries(ixFileHandle, attribute, page, pageNum, numKeys, freeSpaceOffset, childIdx) != 0) return -1;
+        // if internal node is now below half full, signal up
+        memcpy(&numKeys, page + 4, 4);
+        memcpy(&freeSpaceOffset, page + 8, 4);
+
+        if (freeSpaceOffset - METADATA_SIZE < MIN_DATA_BYTES) underflow = true;
                     // merge with sibling and remove into separate key from this node
                     // if removing key makes node drop below win, signal underflow upwards
         return 0;
+    }
+
+    // this is hell
+    // RC redistributeOrMergeEntries(IXFileHandle &ixFileHandle, const Attribute &attribute, char *parentPage, PageNum parentPageNum,
+    //                         int parentNumKeys, int parentFreeSpaceOffset, int childIdx) {
+        
+    //     char page[PAGE_SIZE];
+    //     if (ixFileHandle.readPage(childIdx, page) != 0) return -1;
+    // }
+
+    RC leafEntrySize(const Attribute &attribute, const char *entry) {
+        if (attribute.type == TypeVarChar) { // cannot precompute for varchars
+            int len;
+
+            memcpy(&len, entry, 4);
+            return len + RID_SIZE + 4;
+        }
+
+        return KEY_SIZE + RID_SIZE;
+    }
+
+    RC findLeafEntry(const Attribute & attribute, char *page, int numKeys, const void *key, const RID &rid) {
+        char *start = page + METADATA_SIZE;
+        char *p = start;
+        for (int i = 0; i < numKeys; i++) {
+            int entrySize = leafEntrySize(attribute, p);
+            bool matchingKey = false;
+
+            if (attribute.type == TypeVarChar) {
+                int currentLen, targetLen;
+                memcpy(&currentLen, p, 4);
+                memcpy(&targetLen, key, 4);
+
+                if (currentLen == targetLen && memcmp(p + 4, (char*)key + 4, currentLen) == 0) {
+                    matchingKey = true;
+                } else {
+                    if (memcmp(p, key, 4) == 0) {
+                        matchingKey = true;
+                    }
+                }
+            } else {
+                if (memcmp(p, key, 4) == 0) matchingKey = true;
+            }
+
+            if (matchingKey) {
+                unsigned ridPage;
+                unsigned short ridSlot;
+                memcpy(&ridPage, p + entrySize - RID_SIZE, 4);
+                memcpy(&ridSlot, p + entrySize - RID_SIZE + 4, 2);
+                if (ridPage == rid.pageNum && ridSlot == (unsigned short)rid.slotNum) {
+                    return (int)(p - page);
+                }
+            }
+
+            p += entrySize;
+        }
+
+        return -1;
+    }
+
+    // reads child pointer instead of using index
+    RC findInternalChildIds(const Attribute &attribute, char *page, int numKeys, const void *key) {
+        char *p = page + METADATA_SIZE + 4; // skip flags/numKeys/fso/next, then skip first child ptr
+
+        for (int i = 0; i < numKeys; i++) {
+            int keyLen = (attribute.type == TypeVarChar) ? (*(int*)p + 4) : 4;
+            int cmp;
+
+            if (attribute.type == TypeVarChar) {
+                int currentLen, targetLen;
+                memcpy(&currentLen, p, 4);
+                memcpy(&targetLen, key, 4);
+                int minLen = (currentLen < targetLen) ? currentLen : targetLen;
+                cmp = memcmp(p + 4, (char*)key + 4, minLen);
+
+                if (cmp == 0) {
+                    cmp = (targetLen < currentLen) ? -1 : (targetLen > currentLen ? 1 : 0);
+                }
+            } else if (attribute.type == TypeInt) {
+                int currKey = *(int*)p;
+                int newKey = *(int*)key;
+                cmp = (newKey < currKey) ? -1 : (newKey > currKey ? 1 : 0);
+            } else { // TypeReal
+                float currKey = *(float*)p;
+                float newKey = *(float*)key;
+                cmp = (newKey < currKey) ? -1 : (newKey > currKey ? 1 : 0);
+            }
+            
+            if (cmp < 0) { // targetKey < currSeparator, take the child pointer STRICTLY before dat one (which is i)
+                return i;
+            }
+            p += keyLen + 4; // go to the next key + child pointer after that
+        }
+            return numKeys;
     }
 
     RC

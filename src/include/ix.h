@@ -13,6 +13,7 @@
 # define LEAF_NODE 1
 # define RID_SIZE 6 // 4 for page number 2 for slot number
 # define KEY_SIZE 4
+# define MIN_DATA_BYTES ((PAGE_SIZE - METADATA_SIZE)) / 2 // half-full threshold for nodes
 
 /*
 Structure of the index
