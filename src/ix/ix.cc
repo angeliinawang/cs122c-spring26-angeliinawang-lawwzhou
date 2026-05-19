@@ -368,10 +368,10 @@ namespace PeterDB {
         if (!childUnderflow) return 0; // we done, no redistribution needed
         
         // if child signaled underflow
-        if (redistributeOrMergeEntries(ixFileHandle, attribute, page, pageNum, numKeys, freeSpaceOffset, childIdx) != 0) return -1;
-        // if internal node is now below half full, signal up
-        memcpy(&numKeys, page + 4, 4);
-        memcpy(&freeSpaceOffset, page + 8, 4);
+        // if (redistributeOrMergeEntries(ixFileHandle, attribute, page, pageNum, numKeys, freeSpaceOffset, childIdx) != 0) return -1;
+        // // if internal node is now below half full, signal up
+        // memcpy(&numKeys, page + 4, 4);
+        // memcpy(&freeSpaceOffset, page + 8, 4);
 
         if (freeSpaceOffset - METADATA_SIZE < MIN_DATA_BYTES) underflow = true;
                     // merge with sibling and remove into separate key from this node
