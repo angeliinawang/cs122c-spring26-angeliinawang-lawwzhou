@@ -52,72 +52,74 @@ namespace PeterDB {
         return 0;
     }
 
-    RC insertWithSpace(IXFileHandle &ixFileHandle, const Attribute &attribute, const PageNum &pageNum, const void *key, const RID &rid, char (&page)[PAGE_SIZE],
- int numKeys, int freeSpaceOffset) {
-        char *dataStart = page + METADATA_SIZE;
-        int entrySize;
+    char* findInsertPos(const Attribute &attribute, const void *key, char *dataStart, int numKeys) {
         if (attribute.type == TypeVarChar) {
             char *dataptr = dataStart;
-            char *insertptr = page + freeSpaceOffset;
             int len;
             memcpy(&len, key, 4);
-            entrySize = len + 4 + RID_SIZE;
-            // insert varchar logic
-            // different because we have to convert key to length plus str
-            // have to read lengths in order to iterate through
             for (int i = 0; i < numKeys; i++) {
-                int currentKeyLen;
-                memcpy(&currentKeyLen, dataptr, 4);
-                int minLen; // read only up to the shortest of the two keys
-                if (currentKeyLen <= len) {
-                    minLen = currentKeyLen;
-                }
-                else {
+                int curLen;
+                memcpy(&curLen, dataptr, 4);
+                int minLen;
+                if (len < curLen) {
                     minLen = len;
                 }
-                int comparison = memcmp((char *)key + 4, dataptr + 4, minLen); // go past the length of both keys and read the strings
+                else {
+                    minLen = curLen;
+                }
+                int comparison = memcmp((char*)key + 4, dataptr + 4, minLen);
                 if (comparison < 0) {
-                    // key is less than our current key slot meaning it goes here
-                    insertptr = dataptr;
-                    break;
+                    return dataptr;
                 }
                 else if (comparison == 0) {
-                    if (len < currentKeyLen) {
-                        insertptr = dataptr;
-                        break;
+                    if (len < curLen) {
+                        return dataptr;
                     }
                 }
-                dataptr += 4 + currentKeyLen + RID_SIZE;
+                dataptr += 4 + curLen + RID_SIZE;
             }
-            char *dataEnd = page + freeSpaceOffset;
-            int bytes = dataEnd - insertptr;
-            memmove(insertptr + entrySize, insertptr, bytes);
-            memcpy(insertptr, key, 4);
-            memcpy(insertptr + 4, &rid.pageNum, 4);
-            memcpy(insertptr + 8, &rid.slotNum, 2);
+            return dataptr;
         }
         else {
-            int insertSpot = numKeys;
-            entrySize = KEY_SIZE + RID_SIZE;
             for (int i = 0; i < numKeys; i++) {
                 if (attribute.type == TypeInt) {
                     int newKey = *(int*)key;
                     int currentKey = *(int*)(dataStart + i * (KEY_SIZE + RID_SIZE));
                     if (newKey < currentKey) {
-                        insertSpot = i;
-                        break;
+                        return dataStart + i * (KEY_SIZE + RID_SIZE);
                     }
                 }
                 else if (attribute.type == TypeReal) {
                     float newKey = *(float*)key;
                     float currentKey = *(float*)(dataStart + i * (KEY_SIZE + RID_SIZE));
                     if (newKey < currentKey) {
-                        insertSpot = i;
-                        break;
+                        return dataStart + i * (KEY_SIZE + RID_SIZE);
                     }
                 }
             }
-            char *insertptr = dataStart + insertSpot * entrySize;
+            return dataStart + numKeys * (KEY_SIZE + RID_SIZE);
+        }
+    }
+
+    RC insertWithSpaceLeaf(IXFileHandle &ixFileHandle, const Attribute &attribute, const PageNum &pageNum, const void *key, const RID &rid, char (&page)[PAGE_SIZE],
+ int numKeys, int freeSpaceOffset) {
+        char *dataStart = page + METADATA_SIZE;
+        int entrySize;
+        if (attribute.type == TypeVarChar) {
+            char *insertptr = findInsertPos(attribute, key, dataStart, numKeys);
+            int len;
+            memcpy(&len, key, 4);
+            entrySize = len + 4 + RID_SIZE;
+            char *dataEnd = page + freeSpaceOffset;
+            int bytes = dataEnd - insertptr;
+            memmove(insertptr + entrySize, insertptr, bytes);
+            memcpy(insertptr, key, entrySize - RID_SIZE); 
+            memcpy(insertptr + entrySize - RID_SIZE, &rid.pageNum, 4);
+            memcpy(insertptr + entrySize - RID_SIZE + 4, &rid.slotNum, 2);
+        }
+        else {
+            entrySize = KEY_SIZE + RID_SIZE;
+            char *insertptr = findInsertPos(attribute, key, dataStart, numKeys);
             char *dataEnd = page + freeSpaceOffset;
             int bytes = dataEnd - insertptr;
             memmove(insertptr + entrySize, insertptr, bytes);
@@ -130,8 +132,105 @@ namespace PeterDB {
         freeSpaceOffset += entrySize;
         memcpy(page + 4, &numKeys, 4);
         memcpy(page + 8, &freeSpaceOffset, 4);
+        ixFileHandle.writePage(pageNum, page);
         return 0;
     }
+
+    RC insertSplitLeaf(IXFileHandle &ixFileHandle, const Attribute &attribute, const PageNum &pageNum, const void *key, const RID &rid, char (&page)[PAGE_SIZE],
+ int numKeys, int freeSpaceOffset, void *&newChildKey, PageNum &newChildPage) {
+    // algo from textbook
+    // split the page into two halves, will go on separate pages
+    char buffer[PAGE_SIZE * 2];
+    memcpy(buffer, page + METADATA_SIZE, freeSpaceOffset - METADATA_SIZE);
+    char *dataStart = buffer;
+    int entrySize;
+    // copy every entry into the buffer and then insert the new shit into it
+    if (attribute.type == TypeVarChar) {
+        int len;
+        memcpy(&len, key, 4);
+        entrySize = len + 4 + RID_SIZE;
+    }
+    else {
+        entrySize = KEY_SIZE + RID_SIZE;
+    }
+    char *insertptr = findInsertPos(attribute, key, dataStart, numKeys);
+    char *dataEnd = buffer + (freeSpaceOffset - METADATA_SIZE);
+    int bytes = dataEnd - insertptr;
+    memmove(insertptr + entrySize, insertptr, bytes);
+    if (attribute.type == TypeVarChar) {
+        memcpy(insertptr, key, entrySize - RID_SIZE);
+        memcpy(insertptr + entrySize - RID_SIZE, &rid.pageNum, 4);
+        memcpy(insertptr + entrySize - RID_SIZE + 4, &rid.slotNum, 2);
+    }
+    else {
+        memcpy(insertptr, key, 4);
+        memcpy(insertptr + 4, &rid.pageNum, 4);
+        memcpy(insertptr + 8, &rid.slotNum, 2);
+    }
+    // now do the splitting
+    int numEntries = numKeys + 1;
+    int numLeft = numEntries / 2;
+    int numRight = numEntries - numLeft;
+    char newPage[PAGE_SIZE] = {0};
+    char *splitptr;
+    // get bytes so we know how much of buffer to copy into new pages
+    int bytesLeft;
+    int bytesRight;
+    if (attribute.type == TypeVarChar) {
+        splitptr = buffer;
+        for (int i = 0; i < numLeft; i++) {
+            int curLen;
+            memcpy(&curLen, splitptr, 4);
+            splitptr += 4 + curLen + RID_SIZE;
+        }
+        bytesLeft = splitptr - buffer;
+        bytesRight = dataEnd + entrySize - splitptr; // add entry size because dataend was before we inserted, now we have + 1 entry
+    }
+    else {
+        bytesLeft = numLeft * entrySize;
+        bytesRight = numRight * entrySize;
+        splitptr = buffer + bytesLeft;
+    }
+    // first d entries stay
+    memcpy(page + METADATA_SIZE, buffer, bytesLeft);
+    memcpy(newPage + METADATA_SIZE, buffer + bytesLeft,  bytesRight);
+
+    int node = LEAF_NODE;
+    int next;
+    int newPageFreeSpaceOffset = PAGE_METADATA + bytesRight;
+    int oldPageFreeSpaceOffset = PAGE_METADATA + bytesLeft;
+
+    memcpy(&next, page + 12, 4);
+    memcpy(newPage, &node, 4);
+    memcpy(newPage + 4, &numRight, 4);
+    memcpy(newPage + 8, &newPageFreeSpaceOffset, 4);
+    memcpy(newPage + 12, &next, 4);
+    
+    ixFileHandle.appendPage(newPage);
+    next = ixFileHandle.getNumberOfPages() - 1;
+
+    memcpy(page + 4, &numLeft, 4);
+    memcpy(page + 8, &oldPageFreeSpaceOffset, 4);
+    memcpy(page + 12, &next, 4);
+    ixFileHandle.writePage(pageNum, page);
+
+    // pass back up
+    if (attribute.type == TypeVarChar) {
+        int splitKeyLen;
+        memcpy(&splitKeyLen, splitptr, 4);
+        newChildKey = new char[4 + splitKeyLen];
+        memcpy(newChildKey, splitptr, 4 + splitKeyLen);
+    }
+    else {
+        newChildKey = new char[KEY_SIZE];
+        memcpy(newChildKey, splitptr, KEY_SIZE);
+    }
+    
+    // last d entries move to new page
+    // new child entry is the smallest key value on the second page
+    // set leaf pointers
+
+ }
 
     RC insert(IXFileHandle &ixFileHandle, PageNum pageNum, const Attribute &attribute, const void *key, const RID &rid, void *&newChildKey, PageNum &newChildPage) {
         // following the algorithm from the slides
@@ -160,14 +259,11 @@ namespace PeterDB {
             // if there is space
             if (keySize + freeSpaceOffset + RID_SIZE <= PAGE_SIZE) {
                 // insert the the value into the correct spot and shift everything else over
-                if (insertWithSpace(ixFileHandle, attribute, pageNum, key, rid, page, numKeys, freeSpaceOffset) != 0) return -1;
+                if (insertWithSpaceLeaf(ixFileHandle, attribute, pageNum, key, rid, page, numKeys, freeSpaceOffset) != 0) return -1;
             }
             // if there's NO SPACE SPLIT and pass back up
-            // if there is no space, you have to split aka make a new page and move half over
-            //and pass the newChildKey and newChildPage back up
-            // update the metadata
             else {
-
+                if (insertSplitLeaf(ixFileHandle, attribute, pageNum, key, rid, page, numKeys, freeSpaceOffset, newChildKey, newChildPage) != 0) return -1;
             }
         }
         // if the node is an internal node

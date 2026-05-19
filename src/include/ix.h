@@ -33,6 +33,7 @@ X bytes for the key | RID ( 4 bytes for page number, 2 bytes for slot number)
 TO DO LIST: 
 - inserting with space, varchar (LEAF NODE) DONE
 - splitting bc no space, int and varchar (LEAF NODE)
+
 - traversing down thru pointers to find insert position (INTERNAL NODE)
 - handle new child coming back up AKA insert into internal node (INTERNAL NODE)
 - inserting with space, varchar (INTERNAL NODE)
