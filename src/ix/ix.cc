@@ -55,17 +55,49 @@ namespace PeterDB {
     RC insertWithSpace(IXFileHandle &ixFileHandle, const Attribute &attribute, const PageNum &pageNum, const void *key, const RID &rid, char (&page)[PAGE_SIZE],
  int numKeys, int freeSpaceOffset) {
         char *dataStart = page + METADATA_SIZE;
-        int insertSpot = numKeys;
         int entrySize;
         if (attribute.type == TypeVarChar) {
+            char *dataptr = dataStart;
+            char *insertptr = page + freeSpaceOffset;
             int len;
             memcpy(&len, key, 4);
             entrySize = len + 4 + RID_SIZE;
-                // to do: insert varchar logic
-                // different because we have to convert key to length plus str
-                // have to read lengths in order to iterate through
+            // insert varchar logic
+            // different because we have to convert key to length plus str
+            // have to read lengths in order to iterate through
+            for (int i = 0; i < numKeys; i++) {
+                int currentKeyLen;
+                memcpy(&currentKeyLen, dataptr, 4);
+                int minLen; // read only up to the shortest of the two keys
+                if (currentKeyLen <= len) {
+                    minLen = currentKeyLen;
+                }
+                else {
+                    minLen = len;
+                }
+                int comparison = memcmp((char *)key + 4, dataptr + 4, minLen); // go past the length of both keys and read the strings
+                if (comparison < 0) {
+                    // key is less than our current key slot meaning it goes here
+                    insertptr = dataptr;
+                    break;
+                }
+                else if (comparison == 0) {
+                    if (len < currentKeyLen) {
+                        insertptr = dataptr;
+                        break;
+                    }
+                }
+                dataptr += 4 + currentKeyLen + RID_SIZE;
+            }
+            char *dataEnd = page + freeSpaceOffset;
+            int bytes = dataEnd - insertptr;
+            memmove(insertptr + entrySize, insertptr, bytes);
+            memcpy(insertptr, key, 4);
+            memcpy(insertptr + 4, &rid.pageNum, 4);
+            memcpy(insertptr + 8, &rid.slotNum, 2);
         }
         else {
+            int insertSpot = numKeys;
             entrySize = KEY_SIZE + RID_SIZE;
             for (int i = 0; i < numKeys; i++) {
                 if (attribute.type == TypeInt) {
@@ -103,7 +135,6 @@ namespace PeterDB {
 
     RC insert(IXFileHandle &ixFileHandle, PageNum pageNum, const Attribute &attribute, const void *key, const RID &rid, void *&newChildKey, PageNum &newChildPage) {
         // following the algorithm from the slides
-
         // if the node is a leaf node
         char page[PAGE_SIZE];
         ixFileHandle.readPage(pageNum, page);
