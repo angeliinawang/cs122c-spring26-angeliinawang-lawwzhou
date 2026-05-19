@@ -138,99 +138,97 @@ namespace PeterDB {
 
     RC insertSplitLeaf(IXFileHandle &ixFileHandle, const Attribute &attribute, const PageNum &pageNum, const void *key, const RID &rid, char (&page)[PAGE_SIZE],
  int numKeys, int freeSpaceOffset, void *&newChildKey, PageNum &newChildPage) {
-    // algo from textbook
-    // split the page into two halves, will go on separate pages
-    char buffer[PAGE_SIZE * 2];
-    memcpy(buffer, page + METADATA_SIZE, freeSpaceOffset - METADATA_SIZE);
-    char *dataStart = buffer;
-    int entrySize;
-    // copy every entry into the buffer and then insert the new shit into it
-    if (attribute.type == TypeVarChar) {
-        int len;
-        memcpy(&len, key, 4);
-        entrySize = len + 4 + RID_SIZE;
-    }
-    else {
-        entrySize = KEY_SIZE + RID_SIZE;
-    }
-    char *insertptr = findInsertPos(attribute, key, dataStart, numKeys);
-    char *dataEnd = buffer + (freeSpaceOffset - METADATA_SIZE);
-    int bytes = dataEnd - insertptr;
-    memmove(insertptr + entrySize, insertptr, bytes);
-    if (attribute.type == TypeVarChar) {
-        memcpy(insertptr, key, entrySize - RID_SIZE);
-        memcpy(insertptr + entrySize - RID_SIZE, &rid.pageNum, 4);
-        memcpy(insertptr + entrySize - RID_SIZE + 4, &rid.slotNum, 2);
-    }
-    else {
-        memcpy(insertptr, key, 4);
-        memcpy(insertptr + 4, &rid.pageNum, 4);
-        memcpy(insertptr + 8, &rid.slotNum, 2);
-    }
-    // now do the splitting
-    int numEntries = numKeys + 1;
-    int numLeft = numEntries / 2;
-    int numRight = numEntries - numLeft;
-    char newPage[PAGE_SIZE] = {0};
-    char *splitptr;
-    // get bytes so we know how much of buffer to copy into new pages
-    int bytesLeft;
-    int bytesRight;
-    if (attribute.type == TypeVarChar) {
-        splitptr = buffer;
-        for (int i = 0; i < numLeft; i++) {
-            int curLen;
-            memcpy(&curLen, splitptr, 4);
-            splitptr += 4 + curLen + RID_SIZE;
+        // algo from textbook
+        // split the page into two halves, will go on separate pages
+        char buffer[PAGE_SIZE * 2];
+        memcpy(buffer, page + METADATA_SIZE, freeSpaceOffset - METADATA_SIZE);
+        char *dataStart = buffer;
+        int entrySize;
+        // copy every entry into the buffer and then insert the new shit into it
+        if (attribute.type == TypeVarChar) {
+            int len;
+            memcpy(&len, key, 4);
+            entrySize = len + 4 + RID_SIZE;
         }
-        bytesLeft = splitptr - buffer;
-        bytesRight = dataEnd + entrySize - splitptr; // add entry size because dataend was before we inserted, now we have + 1 entry
-    }
-    else {
-        bytesLeft = numLeft * entrySize;
-        bytesRight = numRight * entrySize;
-        splitptr = buffer + bytesLeft;
-    }
-    // first d entries stay
-    memcpy(page + METADATA_SIZE, buffer, bytesLeft);
-    memcpy(newPage + METADATA_SIZE, buffer + bytesLeft,  bytesRight);
+        else {
+            entrySize = KEY_SIZE + RID_SIZE;
+        }
+        char *insertptr = findInsertPos(attribute, key, dataStart, numKeys);
+        char *dataEnd = buffer + (freeSpaceOffset - METADATA_SIZE);
+        int bytes = dataEnd - insertptr;
+        memmove(insertptr + entrySize, insertptr, bytes);
+        if (attribute.type == TypeVarChar) {
+            memcpy(insertptr, key, entrySize - RID_SIZE);
+            memcpy(insertptr + entrySize - RID_SIZE, &rid.pageNum, 4);
+            memcpy(insertptr + entrySize - RID_SIZE + 4, &rid.slotNum, 2);
+        }
+        else {
+            memcpy(insertptr, key, 4);
+            memcpy(insertptr + 4, &rid.pageNum, 4);
+            memcpy(insertptr + 8, &rid.slotNum, 2);
+        }
+        // now do the splitting
+        int numEntries = numKeys + 1;
+        int numLeft = numEntries / 2;
+        int numRight = numEntries - numLeft;
+        char newPage[PAGE_SIZE] = {0};
+        char *splitptr;
+        // get bytes so we know how much of buffer to copy into new pages
+        int bytesLeft;
+        int bytesRight;
+        if (attribute.type == TypeVarChar) {
+            splitptr = buffer;
+            for (int i = 0; i < numLeft; i++) {
+                int curLen;
+                memcpy(&curLen, splitptr, 4);
+                splitptr += 4 + curLen + RID_SIZE;
+            }
+            bytesLeft = splitptr - buffer;
+            bytesRight = dataEnd + entrySize - splitptr; // add entry size because dataend was before we inserted, now we have + 1 entry
+        }
+        else {
+            bytesLeft = numLeft * entrySize;
+            bytesRight = numRight * entrySize;
+            splitptr = buffer + bytesLeft;
+        }
+        // first d entries stay
+        memcpy(page + METADATA_SIZE, buffer, bytesLeft);
+        memcpy(newPage + METADATA_SIZE, buffer + bytesLeft,  bytesRight);
 
-    int node = LEAF_NODE;
-    int next;
-    int newPageFreeSpaceOffset = PAGE_METADATA + bytesRight;
-    int oldPageFreeSpaceOffset = PAGE_METADATA + bytesLeft;
+        int node = LEAF_NODE;
+        int next;
+        int newPageFreeSpaceOffset = METADATA_SIZE + bytesRight;
+        int oldPageFreeSpaceOffset = METADATA_SIZE + bytesLeft;
 
-    memcpy(&next, page + 12, 4);
-    memcpy(newPage, &node, 4);
-    memcpy(newPage + 4, &numRight, 4);
-    memcpy(newPage + 8, &newPageFreeSpaceOffset, 4);
-    memcpy(newPage + 12, &next, 4);
-    
-    ixFileHandle.appendPage(newPage);
-    next = ixFileHandle.getNumberOfPages() - 1;
+        memcpy(&next, page + 12, 4);
+        memcpy(newPage, &node, 4);
+        memcpy(newPage + 4, &numRight, 4);
+        memcpy(newPage + 8, &newPageFreeSpaceOffset, 4);
+        memcpy(newPage + 12, &next, 4);
+        
+        ixFileHandle.appendPage(newPage);
+        next = ixFileHandle.getNumberOfPages() - 1;
+        newChildPage = next;
 
-    memcpy(page + 4, &numLeft, 4);
-    memcpy(page + 8, &oldPageFreeSpaceOffset, 4);
-    memcpy(page + 12, &next, 4);
-    ixFileHandle.writePage(pageNum, page);
+        memcpy(page + 4, &numLeft, 4);
+        memcpy(page + 8, &oldPageFreeSpaceOffset, 4);
+        memcpy(page + 12, &next, 4);
+        ixFileHandle.writePage(pageNum, page);
 
-    // pass back up
-    if (attribute.type == TypeVarChar) {
-        int splitKeyLen;
-        memcpy(&splitKeyLen, splitptr, 4);
-        newChildKey = new char[4 + splitKeyLen];
-        memcpy(newChildKey, splitptr, 4 + splitKeyLen);
+        // pass back up
+        if (attribute.type == TypeVarChar) {
+            int splitKeyLen;
+            memcpy(&splitKeyLen, splitptr, 4);
+            newChildKey = new char[4 + splitKeyLen];
+            memcpy(newChildKey, splitptr, 4 + splitKeyLen);
+        }
+        else {
+            newChildKey = new char[KEY_SIZE];
+            memcpy(newChildKey, splitptr, KEY_SIZE);
+        }
+
+        return 0;
     }
-    else {
-        newChildKey = new char[KEY_SIZE];
-        memcpy(newChildKey, splitptr, KEY_SIZE);
-    }
-    
-    // last d entries move to new page
-    // new child entry is the smallest key value on the second page
-    // set leaf pointers
-    return 0;
- }
 
     RC insert(IXFileHandle &ixFileHandle, PageNum pageNum, const Attribute &attribute, const void *key, const RID &rid, void *&newChildKey, PageNum &newChildPage) {
         // following the algorithm from the slides
@@ -260,10 +258,12 @@ namespace PeterDB {
             if (keySize + freeSpaceOffset + RID_SIZE <= PAGE_SIZE) {
                 // insert the the value into the correct spot and shift everything else over
                 if (insertWithSpaceLeaf(ixFileHandle, attribute, pageNum, key, rid, page, numKeys, freeSpaceOffset) != 0) return -1;
+                return 0;
             }
             // if there's NO SPACE SPLIT and pass back up
             else {
                 if (insertSplitLeaf(ixFileHandle, attribute, pageNum, key, rid, page, numKeys, freeSpaceOffset, newChildKey, newChildPage) != 0) return -1;
+                return 0;
             }
         }
         // if the node is an internal node
@@ -271,6 +271,22 @@ namespace PeterDB {
             // if newChildKey and newChildPage come back with values, you have to insert that into this internal node
         else {
             // choose subtree
+            int childIndex = findInternalChildIds(attribute, page, numKeys, key);
+            PageNum childPage;
+            if (attribute.type == TypeVarChar) {
+                char *cur = page + METADATA_SIZE;
+                for (int i = 0; i < childIndex; i++) {
+                    cur += PTR_SIZE;  // skip pointer
+                    int curLen;
+                    memcpy(&curLen, cur, 4);
+                    cur += 4 + curLen;  // skip key
+                }
+                memcpy(&childPage, cur, PTR_SIZE);
+            }
+            else {
+                memcpy(&childPage, page + METADATA_SIZE + childIndex * (PTR_SIZE + KEY_SIZE), PTR_SIZE);
+            }
+            insert(ixFileHandle, childPage, attribute, key, rid, newChildKey, newChildPage);
             // recursively insert
             // check childEntry in case of split below
 
