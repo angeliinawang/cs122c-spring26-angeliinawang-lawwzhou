@@ -138,99 +138,97 @@ namespace PeterDB {
 
     RC insertSplitLeaf(IXFileHandle &ixFileHandle, const Attribute &attribute, const PageNum &pageNum, const void *key, const RID &rid, char (&page)[PAGE_SIZE],
  int numKeys, int freeSpaceOffset, void *&newChildKey, PageNum &newChildPage) {
-    // algo from textbook
-    // split the page into two halves, will go on separate pages
-    char buffer[PAGE_SIZE * 2];
-    memcpy(buffer, page + METADATA_SIZE, freeSpaceOffset - METADATA_SIZE);
-    char *dataStart = buffer;
-    int entrySize;
-    // copy every entry into the buffer and then insert the new shit into it
-    if (attribute.type == TypeVarChar) {
-        int len;
-        memcpy(&len, key, 4);
-        entrySize = len + 4 + RID_SIZE;
-    }
-    else {
-        entrySize = KEY_SIZE + RID_SIZE;
-    }
-    char *insertptr = findInsertPos(attribute, key, dataStart, numKeys);
-    char *dataEnd = buffer + (freeSpaceOffset - METADATA_SIZE);
-    int bytes = dataEnd - insertptr;
-    memmove(insertptr + entrySize, insertptr, bytes);
-    if (attribute.type == TypeVarChar) {
-        memcpy(insertptr, key, entrySize - RID_SIZE);
-        memcpy(insertptr + entrySize - RID_SIZE, &rid.pageNum, 4);
-        memcpy(insertptr + entrySize - RID_SIZE + 4, &rid.slotNum, 2);
-    }
-    else {
-        memcpy(insertptr, key, 4);
-        memcpy(insertptr + 4, &rid.pageNum, 4);
-        memcpy(insertptr + 8, &rid.slotNum, 2);
-    }
-    // now do the splitting
-    int numEntries = numKeys + 1;
-    int numLeft = numEntries / 2;
-    int numRight = numEntries - numLeft;
-    char newPage[PAGE_SIZE] = {0};
-    char *splitptr;
-    // get bytes so we know how much of buffer to copy into new pages
-    int bytesLeft;
-    int bytesRight;
-    if (attribute.type == TypeVarChar) {
-        splitptr = buffer;
-        for (int i = 0; i < numLeft; i++) {
-            int curLen;
-            memcpy(&curLen, splitptr, 4);
-            splitptr += 4 + curLen + RID_SIZE;
+        // algo from textbook
+        // split the page into two halves, will go on separate pages
+        char buffer[PAGE_SIZE * 2];
+        memcpy(buffer, page + METADATA_SIZE, freeSpaceOffset - METADATA_SIZE);
+        char *dataStart = buffer;
+        int entrySize;
+        // copy every entry into the buffer and then insert the new shit into it
+        if (attribute.type == TypeVarChar) {
+            int len;
+            memcpy(&len, key, 4);
+            entrySize = len + 4 + RID_SIZE;
         }
-        bytesLeft = splitptr - buffer;
-        bytesRight = dataEnd + entrySize - splitptr; // add entry size because dataend was before we inserted, now we have + 1 entry
-    }
-    else {
-        bytesLeft = numLeft * entrySize;
-        bytesRight = numRight * entrySize;
-        splitptr = buffer + bytesLeft;
-    }
-    // first d entries stay
-    memcpy(page + METADATA_SIZE, buffer, bytesLeft);
-    memcpy(newPage + METADATA_SIZE, buffer + bytesLeft,  bytesRight);
+        else {
+            entrySize = KEY_SIZE + RID_SIZE;
+        }
+        char *insertptr = findInsertPos(attribute, key, dataStart, numKeys);
+        char *dataEnd = buffer + (freeSpaceOffset - METADATA_SIZE);
+        int bytes = dataEnd - insertptr;
+        memmove(insertptr + entrySize, insertptr, bytes);
+        if (attribute.type == TypeVarChar) {
+            memcpy(insertptr, key, entrySize - RID_SIZE);
+            memcpy(insertptr + entrySize - RID_SIZE, &rid.pageNum, 4);
+            memcpy(insertptr + entrySize - RID_SIZE + 4, &rid.slotNum, 2);
+        }
+        else {
+            memcpy(insertptr, key, 4);
+            memcpy(insertptr + 4, &rid.pageNum, 4);
+            memcpy(insertptr + 8, &rid.slotNum, 2);
+        }
+        // now do the splitting
+        int numEntries = numKeys + 1;
+        int numLeft = numEntries / 2;
+        int numRight = numEntries - numLeft;
+        char newPage[PAGE_SIZE] = {0};
+        char *splitptr;
+        // get bytes so we know how much of buffer to copy into new pages
+        int bytesLeft;
+        int bytesRight;
+        if (attribute.type == TypeVarChar) {
+            splitptr = buffer;
+            for (int i = 0; i < numLeft; i++) {
+                int curLen;
+                memcpy(&curLen, splitptr, 4);
+                splitptr += 4 + curLen + RID_SIZE;
+            }
+            bytesLeft = splitptr - buffer;
+            bytesRight = dataEnd + entrySize - splitptr; // add entry size because dataend was before we inserted, now we have + 1 entry
+        }
+        else {
+            bytesLeft = numLeft * entrySize;
+            bytesRight = numRight * entrySize;
+            splitptr = buffer + bytesLeft;
+        }
+        // first d entries stay
+        memcpy(page + METADATA_SIZE, buffer, bytesLeft);
+        memcpy(newPage + METADATA_SIZE, buffer + bytesLeft,  bytesRight);
 
-    int node = LEAF_NODE;
-    int next;
-    int newPageFreeSpaceOffset = PAGE_METADATA + bytesRight;
-    int oldPageFreeSpaceOffset = PAGE_METADATA + bytesLeft;
+        int node = LEAF_NODE;
+        int next;
+        int newPageFreeSpaceOffset = METADATA_SIZE + bytesRight;
+        int oldPageFreeSpaceOffset = METADATA_SIZE + bytesLeft;
 
-    memcpy(&next, page + 12, 4);
-    memcpy(newPage, &node, 4);
-    memcpy(newPage + 4, &numRight, 4);
-    memcpy(newPage + 8, &newPageFreeSpaceOffset, 4);
-    memcpy(newPage + 12, &next, 4);
-    
-    ixFileHandle.appendPage(newPage);
-    next = ixFileHandle.getNumberOfPages() - 1;
+        memcpy(&next, page + 12, 4);
+        memcpy(newPage, &node, 4);
+        memcpy(newPage + 4, &numRight, 4);
+        memcpy(newPage + 8, &newPageFreeSpaceOffset, 4);
+        memcpy(newPage + 12, &next, 4);
+        
+        ixFileHandle.appendPage(newPage);
+        next = ixFileHandle.getNumberOfPages() - 1;
+        newChildPage = next;
 
-    memcpy(page + 4, &numLeft, 4);
-    memcpy(page + 8, &oldPageFreeSpaceOffset, 4);
-    memcpy(page + 12, &next, 4);
-    ixFileHandle.writePage(pageNum, page);
+        memcpy(page + 4, &numLeft, 4);
+        memcpy(page + 8, &oldPageFreeSpaceOffset, 4);
+        memcpy(page + 12, &next, 4);
+        ixFileHandle.writePage(pageNum, page);
 
-    // pass back up
-    if (attribute.type == TypeVarChar) {
-        int splitKeyLen;
-        memcpy(&splitKeyLen, splitptr, 4);
-        newChildKey = new char[4 + splitKeyLen];
-        memcpy(newChildKey, splitptr, 4 + splitKeyLen);
+        // pass back up
+        if (attribute.type == TypeVarChar) {
+            int splitKeyLen;
+            memcpy(&splitKeyLen, splitptr, 4);
+            newChildKey = new char[4 + splitKeyLen];
+            memcpy(newChildKey, splitptr, 4 + splitKeyLen);
+        }
+        else {
+            newChildKey = new char[KEY_SIZE];
+            memcpy(newChildKey, splitptr, KEY_SIZE);
+        }
+
+        return 0;
     }
-    else {
-        newChildKey = new char[KEY_SIZE];
-        memcpy(newChildKey, splitptr, KEY_SIZE);
-    }
-    
-    // last d entries move to new page
-    // new child entry is the smallest key value on the second page
-    // set leaf pointers
-    return 0;
- }
 
     RC insert(IXFileHandle &ixFileHandle, PageNum pageNum, const Attribute &attribute, const void *key, const RID &rid, void *&newChildKey, PageNum &newChildPage) {
         // following the algorithm from the slides
@@ -260,10 +258,12 @@ namespace PeterDB {
             if (keySize + freeSpaceOffset + RID_SIZE <= PAGE_SIZE) {
                 // insert the the value into the correct spot and shift everything else over
                 if (insertWithSpaceLeaf(ixFileHandle, attribute, pageNum, key, rid, page, numKeys, freeSpaceOffset) != 0) return -1;
+                return 0;
             }
             // if there's NO SPACE SPLIT and pass back up
             else {
                 if (insertSplitLeaf(ixFileHandle, attribute, pageNum, key, rid, page, numKeys, freeSpaceOffset, newChildKey, newChildPage) != 0) return -1;
+                return 0;
             }
         }
         // if the node is an internal node
@@ -271,6 +271,22 @@ namespace PeterDB {
             // if newChildKey and newChildPage come back with values, you have to insert that into this internal node
         else {
             // choose subtree
+            int childIndex = findInternalChildIds(attribute, page, numKeys, key);
+            PageNum childPage;
+            if (attribute.type == TypeVarChar) {
+                char *cur = page + METADATA_SIZE;
+                for (int i = 0; i < childIndex; i++) {
+                    cur += PTR_SIZE;  // skip pointer
+                    int curLen;
+                    memcpy(&curLen, cur, 4);
+                    cur += 4 + curLen;  // skip key
+                }
+                memcpy(&childPage, cur, PTR_SIZE);
+            }
+            else {
+                memcpy(&childPage, page + METADATA_SIZE + childIndex * (PTR_SIZE + KEY_SIZE), PTR_SIZE);
+            }
+            insert(ixFileHandle, childPage, attribute, key, rid, newChildKey, newChildPage);
             // recursively insert
             // check childEntry in case of split below
 
@@ -310,13 +326,205 @@ namespace PeterDB {
         return 0;
     }
 
-    // this is hell
-    // RC redistributeOrMergeEntries(IXFileHandle &ixFileHandle, const Attribute &attribute, char *parentPage, PageNum parentPageNum,
-    //                         int parentNumKeys, int parentFreeSpaceOffset, int childIdx) {
+    // forward declaration (defined below)
+    RC leafEntrySize(const Attribute &attribute, const char *entry);
+
+    // 0-indexed, get byte offset of idx-th child pointer in an internal node
+    int internalChildPtrOffsetAt(const Attribute &attribute, const char *page, int idx) {
+        int offset = METADATA_SIZE;
+
+        for (int i = 0; i < idx; i++) {
+            offset += 4;  // skip ptr at i
+
+            if (attribute.type == TypeVarChar) {
+                int len;
+                memcpy(&len, page + offset, 4);
+                offset += 4 + len;
+            } else {
+                offset += 4;
+            }
+        }
+        return offset;
+    }
+
+    // 1-indexed, get byte offset of idx-th separator key in an internal node
+    int internalKeyOffsetAt(const Attribute &attribute, const char *page, int idx) {
+        int offset = METADATA_SIZE + 4;  // skip ptr 0, now at key 1
+
+        for (int i = 1; i < idx; i++) {
+            int len = (attribute.type == TypeVarChar) ? (*(int*)(page + offset) + 4) : 4;
+            offset += len + 4;  // skip key and ptr at i
+        }
+        return offset;
+    }
+
+    // total byte length of a key at the given offset
+    int keyLenAt(const Attribute &attribute, const char *p) {
+        if (attribute.type == TypeVarChar) {
+            int len; memcpy(&len, p, 4); return 4 + len;
+        }
+        return KEY_SIZE;
+    }
+
+    RC redistributeOrMergeEntries(IXFileHandle &ixFileHandle, const Attribute &attribute, char *parentPage, PageNum parentPageNum,
+                            int parentNumKeys, int parentFreeSpaceOffset, int childIdx) {
         
-    //     char page[PAGE_SIZE];
-    //     if (ixFileHandle.readPage(childIdx, page) != 0) return -1;
-    // }
+        // read underflowing child node
+        int childPtrOffset = internalChildPtrOffsetAt(attribute, parentPage, childIdx);
+        PageNum childPageNum;
+        memcpy(&childPageNum, parentPage + childPtrOffset, 4);
+
+        char child[PAGE_SIZE];
+        if (ixFileHandle.readPage(childPageNum, child) != 0) return -1;
+
+        int childFlag, childNumKeys, childFSO, childNext;
+        memcpy(&childFlag, child, 4);
+        memcpy(&childNumKeys, child + 4, 4);
+        memcpy(&childFSO, child + 8, 4);
+        memcpy(&childNext, child + 12, 4);
+
+        // pick a sibling, prefer left
+        bool useLeft = (childIdx > 0);
+        int sibIdx = useLeft ? (childIdx - 1) : (childIdx + 1);
+        int sepKeyIdx = useLeft ? childIdx : (childIdx + 1); // parent separator key INDEX (1-based) sitting between child[sibIdx] and child[sibIdx+1]
+        
+        int sibPtrOffset = internalChildPtrOffsetAt(attribute, parentPage, sibIdx);
+        PageNum sibPageNum;
+        memcpy(&sibPageNum, parentPage + sibPtrOffset, 4);
+
+        char sibling[PAGE_SIZE];
+        if (ixFileHandle.readPage(sibPageNum, sibling) != 0) return -1;
+
+        int sibNumKeys, sibFSO, sibNext;
+        memcpy(&sibNumKeys, sibling + 4, 4);
+        memcpy(&sibFSO, sibling + 8, 4);
+        memcpy(&sibNext, sibling + 12, 4);
+
+        int sibUsedBytes = sibFSO - METADATA_SIZE;
+
+        // leaf children
+        if (childFlag == LEAF_NODE) {
+            if (sibUsedBytes > MIN_DATA_BYTES) {
+                // redistribute leaves
+                char *sibData = sibling + METADATA_SIZE;
+                char *childData = child + METADATA_SIZE;
+
+                if (useLeft) {
+                    // move sibling's last entry to front of child
+                    char *p = sibData;
+                    char *lastEntry = nullptr;
+                    int lastSize = 0;
+                    for (int i = 0; i < sibNumKeys; i++) {
+                        lastEntry = p;
+                        lastSize = leafEntrySize(attribute, p);
+                        p += lastSize;
+                    }
+
+                    memmove(childData + lastSize, childData, childFSO - METADATA_SIZE);
+                    memcpy(childData, lastEntry, lastSize);
+                    sibNumKeys -= 1;  sibFSO -= lastSize;
+                    childNumKeys += 1; childFSO += lastSize;
+                } else {
+                    // move sibling's first entry to end of child
+                    int firstSize = leafEntrySize(attribute, sibData);
+                    memcpy(child + childFSO, sibData, firstSize);
+                    memmove(sibData, sibData + firstSize, sibFSO - METADATA_SIZE - firstSize);
+
+                    sibNumKeys -= 1;
+                    sibFSO -= firstSize;
+                    childNumKeys += 1;
+                    childFSO += firstSize;
+                }
+
+                // update parent separator, which is smallest key on the right page (only the key)
+                char *rightData = useLeft ? child + METADATA_SIZE : sibling + METADATA_SIZE;
+                int newSepLen = keyLenAt(attribute, rightData);
+                int oldSepOffset = internalKeyOffsetAt(attribute, parentPage, sepKeyIdx);
+                int oldSepLen = keyLenAt(attribute, parentPage + oldSepOffset);
+
+                int tailStart = oldSepOffset + oldSepLen;
+                int tailBytes = parentFreeSpaceOffset - tailStart;
+                memmove(parentPage + oldSepOffset + newSepLen, parentPage + tailStart, tailBytes);
+                memcpy(parentPage + oldSepOffset, rightData, newSepLen);
+
+                parentFreeSpaceOffset += (newSepLen - oldSepLen);
+                memcpy(parentPage + 8, &parentFreeSpaceOffset, 4);
+
+                memcpy(child + 4, &childNumKeys, 4);
+                memcpy(child + 8, &childFSO, 4);
+                memcpy(sibling + 4, &sibNumKeys, 4);
+                memcpy(sibling + 8, &sibFSO, 4);
+
+                if (ixFileHandle.writePage(childPageNum, child) != 0) return -1;
+                if (ixFileHandle.writePage(sibPageNum, sibling) != 0) return -1;
+                if (ixFileHandle.writePage(parentPageNum, parentPage) != 0) return -1;
+
+                return 0;
+            }
+
+            // MERGEEE leaf babies
+            char *leftPage, *rightPage;
+            PageNum leftPageNum, rightPageNum;
+            int leftFSO, leftNumKeys, rightFSO, rightNumKeys, rightNext;
+            if (useLeft) {
+                leftPage = sibling; leftPageNum = sibPageNum;
+                rightPage = child; rightPageNum = childPageNum;
+                leftFSO = sibFSO; leftNumKeys = sibNumKeys;
+                rightFSO = childFSO; rightNumKeys = childNumKeys; rightNext = childNext;
+            } else {
+                leftPage = child; leftPageNum = childPageNum;
+                rightPage = sibling; rightPageNum = sibPageNum;
+                leftFSO = childFSO; leftNumKeys = childNumKeys;
+                rightFSO = sibFSO; rightNumKeys = sibNumKeys; rightNext = sibNext;
+            }
+
+            int rightDataBytes = rightFSO - METADATA_SIZE;
+            memcpy(leftPage + leftFSO, rightPage + METADATA_SIZE, rightDataBytes);
+            leftNumKeys += rightNumKeys;
+            leftFSO += rightDataBytes;
+
+            memcpy(leftPage + 4, &leftNumKeys, 4);
+            memcpy(leftPage + 8, &leftFSO, 4);
+            memcpy(leftPage + 12, &rightNext, 4);
+            if (ixFileHandle.writePage(leftPageNum, leftPage) != 0) return -1;
+
+            // remove separator + right child pointer from parent
+            int sepOffset = internalKeyOffsetAt(attribute, parentPage, sepKeyIdx);
+            int sepLen = keyLenAt(attribute, parentPage + sepOffset);
+            int removeBytes = sepLen + 4;
+            int tailStart = sepOffset + removeBytes;
+            int tailBytes = parentFreeSpaceOffset - tailStart;
+            memmove(parentPage + sepOffset, parentPage + tailStart, tailBytes);
+
+            parentNumKeys -= 1;
+            parentFreeSpaceOffset -= removeBytes;
+            memcpy(parentPage + 4, &parentNumKeys, 4);
+            memcpy(parentPage + 8, &parentFreeSpaceOffset, 4);
+            if (ixFileHandle.writePage(parentPageNum, parentPage) != 0) return -1;
+
+            return 0;
+        }
+
+        // internal children (my brain hurts i wil do this tmrw gn)
+            //redistribute internal nodes, rotate with parent
+                // sibling's last (key, ptr) -> child front
+                // parent sep moves down --> sibling last key moves up
+                // prepend [sib_last_ptr][parent_sep] to child
+                // save the sibling's last key before we shrink sibling
+                // sibling loses its last (key + ptr)
+
+                // replace parent separator with sibling's old last key
+                // right sibling has spare: parent sep -> child end
+                // sibling first ptr -> child end ptr
+                // sibling first key moves up
+                // append [parent_sep][sibling's ptr_0] to child
+                // save sibling's first key, sibling loses its first (ptr 0 + key 1)
+                // replace parent sep with sibling's prev first key
+
+        // MERGE internal nodes, pull parent sep down as a key between left and right nodes
+
+        return 0;
+    }
 
     RC leafEntrySize(const Attribute &attribute, const char *entry) {
         if (attribute.type == TypeVarChar) { // cannot precompute for varchars
@@ -462,10 +670,10 @@ namespace PeterDB {
         if (!childUnderflow) return 0; // we done, no redistribution needed
         
         // if child signaled underflow
-        // if (redistributeOrMergeEntries(ixFileHandle, attribute, page, pageNum, numKeys, freeSpaceOffset, childIdx) != 0) return -1;
-        // // if internal node is now below half full, signal up
-        // memcpy(&numKeys, page + 4, 4);
-        // memcpy(&freeSpaceOffset, page + 8, 4);
+        if (redistributeOrMergeEntries(ixFileHandle, attribute, page, pageNum, numKeys, freeSpaceOffset, childIdx) != 0) return -1;
+        // if internal node is now below half full, signal up
+        memcpy(&numKeys, page + 4, 4);
+        memcpy(&freeSpaceOffset, page + 8, 4);
 
         if (freeSpaceOffset - METADATA_SIZE < MIN_DATA_BYTES) underflow = true;
                     // merge with sibling and remove into separate key from this node
@@ -512,8 +720,97 @@ namespace PeterDB {
         return -1;
     }
 
-    RC IndexManager::printBTree(IXFileHandle &ixFileHandle, const Attribute &attribute, std::ostream &out) const {
+    RC printNode(IXFileHandle &ixFileHandle, PageNum pageNum, const Attribute &attribute, std::ostream &out) {
+        char page[PAGE_SIZE];
+        if (ixFileHandle.readPage(pageNum, page) != 0) return -1;
+
+        int flag, numKeys, freeSpaceOffset;
+        memcpy(&flag, page, 4);
+        memcpy(&numKeys, page + 4, 4);
+        memcpy(&freeSpaceOffset, page + 8, 4);
+
+        // leaf node
+        if (flag == LEAF_NODE) {
+            out << "{\"keys\":[";
+            char *p = page + METADATA_SIZE;
+            for (int i = 0; i < numKeys; i++) {
+                std::string keyStr; // read key
+                int entrySize;
+                if (attribute.type == TypeVarChar) {
+                    int len; memcpy(&len, p, 4);
+                    keyStr.assign(p + 4, len);
+                    entrySize = 4 + len + RID_SIZE;
+                } else if (attribute.type == TypeInt) {
+                    int k; memcpy(&k, p, 4);
+                    keyStr = std::to_string(k);
+                    entrySize = KEY_SIZE + RID_SIZE;
+                } else { // TypeReal
+                    float k; memcpy(&k, p, 4);
+                    keyStr = std::to_string(k);
+                    entrySize = KEY_SIZE + RID_SIZE;
+                }
+
+                // read RID
+                unsigned ridPage;
+                unsigned short ridSlot;
+                memcpy(&ridPage, p + entrySize - RID_SIZE, 4);
+                memcpy(&ridSlot, p + entrySize - RID_SIZE + 4, 2);
+
+                if (i > 0) out << ",";
+                out << "\"" << keyStr << ":[(" << ridPage << "," << ridSlot << ")]\"";
+                p += entrySize;
+            }
+            out << "]}";
+            return 0;
+        }
+
+        // internal node
+        out << "{\"keys\":[";
+        char *p = page + METADATA_SIZE + 4;  // skip ptr 0
+        for (int i = 0; i < numKeys; i++) {
+            std::string keyStr;
+            int keyLen;
+            if (attribute.type == TypeVarChar) {
+                int len; memcpy(&len, p, 4);
+                keyStr.assign(p + 4, len);
+                keyLen = 4 + len;
+            } else if (attribute.type == TypeInt) {
+                int k; memcpy(&k, p, 4);
+                keyStr = std::to_string(k);
+                keyLen = KEY_SIZE;
+            } else {
+                float k; memcpy(&k, p, 4);
+                keyStr = std::to_string(k);
+                keyLen = KEY_SIZE;
+            }
+
+            if (i > 0) out << ",";
+            out << "\"" << keyStr << "\"";
+            p += keyLen + 4;  // skip key + next ptr
+        }
+        out << "],\"children\":[";
+
+        // walk children, numKeys + 1
+        for (int i = 0; i <= numKeys; i++) {
+            int childPtrOffset = internalChildPtrOffsetAt(attribute, page, i);
+            PageNum childPageNum;
+            memcpy(&childPageNum, page + childPtrOffset, 4);
+
+            if (i > 0) out << ",";
+            if (printNode(ixFileHandle, childPageNum, attribute, out) != 0) return -1;
+        }
+        out << "]}";
         return 0;
+    }
+
+
+    RC IndexManager::printBTree(IXFileHandle &ixFileHandle, const Attribute &attribute, std::ostream &out) const {
+        if (ixFileHandle.rootPageNum == 0) {
+            out << "{\"keys\":[]}";
+            return 0;
+        }
+
+        return printNode(ixFileHandle, ixFileHandle.rootPageNum, attribute, out);
     }
 
     IX_ScanIterator::IX_ScanIterator() {

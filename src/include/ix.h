@@ -3,6 +3,8 @@
 
 #include <vector>
 #include <string>
+#include <cstring>
+#include <ostream>
 
 #include "pfm.h"
 #include "rbfm.h" // for some type declarations only, e.g., RID and Attribute
@@ -14,6 +16,7 @@
 # define RID_SIZE 6 // 4 for page number 2 for slot number
 # define KEY_SIZE 4
 # define MIN_DATA_BYTES ((PAGE_SIZE - METADATA_SIZE)) / 2 // half-full threshold for nodes
+# define PTR_SIZE 4
 
 /*
 Structure of the index
@@ -34,8 +37,8 @@ X bytes for the key | RID ( 4 bytes for page number, 2 bytes for slot number)
 TO DO LIST: 
 - inserting with space, varchar (LEAF NODE) DONE
 - splitting bc no space, int and varchar (LEAF NODE)
-
 - traversing down thru pointers to find insert position (INTERNAL NODE)
+
 - handle new child coming back up AKA insert into internal node (INTERNAL NODE)
 - inserting with space, varchar (INTERNAL NODE)
 - splitting bc no space, int and varchar (INTERNAL NODE)
