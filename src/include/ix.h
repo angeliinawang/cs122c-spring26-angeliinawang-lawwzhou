@@ -106,6 +106,19 @@ namespace PeterDB {
 
         // Terminate index scan
         RC close();
+
+        // scan state
+        IXFileHandle *ixFileHandle = nullptr;
+        Attribute attribute;
+        std::vector<char> lowKey;   // empty = unbounded
+        std::vector<char> highKey;  // empty = unbounded
+        bool lowKeyInclusive = true;
+        bool highKeyInclusive = true;
+        char currentPage[PAGE_SIZE];
+        int currentEntryIdx = 0;
+        PageNum currentPageNum = 0;
+        bool isOpen = false;
+        bool exhausted = false;
     };
 
     class IXFileHandle {
