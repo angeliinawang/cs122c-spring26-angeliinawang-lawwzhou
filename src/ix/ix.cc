@@ -229,7 +229,7 @@ namespace PeterDB {
     // last d entries move to new page
     // new child entry is the smallest key value on the second page
     // set leaf pointers
-
+    return 0;
  }
 
     RC insert(IXFileHandle &ixFileHandle, PageNum pageNum, const Attribute &attribute, const void *key, const RID &rid, void *&newChildKey, PageNum &newChildPage) {
@@ -307,75 +307,6 @@ namespace PeterDB {
         if (newChildKey != nullptr) {
             
         }
-        return 0;
-    }
-
-    RC del(IXFileHandle &ixFileHandle, PageNum pageNum, const Attribute &attribute, const void *key, const RID &rid, bool &underflow) {
-        char page[PAGE_SIZE];
-        if (ixFileHandle.readPage(pageNum, page) != 0) return -1;
-
-        int flag, numKeys, freeSpaceOffset, next;
-        memcpy(&flag, page, 4);
-        memcpy(&numKeys, page + 4, 4);
-        memcpy(&freeSpaceOffset, page + 8, 4);
-        memcpy(&next, page + 12, 4);
-
-        // if pageNum page is a leaf,
-        if (flag == LEAF_NODE) {
-            int entryOffset = findLeafEntry(attribute, page, numKeys, key, rid);
-            if (entryOffset < 0) return -1; // entry not found
-
-            int entrySize = leafEntrySize(attribute, page + entryOffset); // # of bytes to remove
-            int remBytes = freeSpaceOffset - (entryOffset + entrySize);
-            memmove(page + entryOffset, page + entryOffset + entrySize, remBytes); // shift entries left, decrement numkeys and spaceoffset, write page
-
-            numKeys -= 1;
-            freeSpaceOffset -= entrySize;
-            memcpy(page + 4, &numKeys, 4);
-            memcpy(page + 8, &freeSpaceOffset, 4);
-
-            if (ixFileHandle.writePage(pageNum, page) != 0) return -1;
-            // if numkeys < min, signal underflow to caller
-            if (freeSpaceOffset - METADATA_SIZE < MIN_DATA_BYTES) underflow = true;
-
-            return 0;
-        }
-        
-        // internal node
-        // find which child covers key K, recurse into it
-        int childIdx = findInternalChildIds(attribute, page, numKeys, key);
-        PageNum childPage;
-        int childPtrOffset = METADATA_SIZE; // offset of the idx-th child pointer
-        if (attribute.type == TypeVarChar) {
-            if (childIdx == 0) {
-                childPtrOffset = METADATA_SIZE;
-            } else {
-                char *p = page + METADATA_SIZE + 4; // skip ptr0
-                for (int i = 0; i < childIdx; i++) {
-                    int currentLen;
-                    memcpy(&currentLen, p, 4);
-                    p += 4 + currentLen + 4; // skip this key + next pointer
-                }
-                childPtrOffset = METADATA_SIZE + childIdx * (KEY_SIZE + 4);
-            }
-        }
-
-        memcpy(&childPage, page + childPtrOffset, 4);
-
-        // RECURSIVE PART
-        bool childUnderflow = false;
-        if (del(ixFileHandle, childPage, attribute, key, rid, childUnderflow) != 0) return -1;
-        if (!childUnderflow) return 0; // we done, no redistribution needed
-        
-        // if child signaled underflow
-        // if (redistributeOrMergeEntries(ixFileHandle, attribute, page, pageNum, numKeys, freeSpaceOffset, childIdx) != 0) return -1;
-        // // if internal node is now below half full, signal up
-        // memcpy(&numKeys, page + 4, 4);
-        // memcpy(&freeSpaceOffset, page + 8, 4);
-
-        if (freeSpaceOffset - METADATA_SIZE < MIN_DATA_BYTES) underflow = true;
-                    // merge with sibling and remove into separate key from this node
-                    // if removing key makes node drop below win, signal underflow upwards
         return 0;
     }
 
@@ -471,6 +402,75 @@ namespace PeterDB {
             p += keyLen + 4; // go to the next key + child pointer after that
         }
             return numKeys;
+    }
+
+    RC del(IXFileHandle &ixFileHandle, PageNum pageNum, const Attribute &attribute, const void *key, const RID &rid, bool &underflow) {
+        char page[PAGE_SIZE];
+        if (ixFileHandle.readPage(pageNum, page) != 0) return -1;
+
+        int flag, numKeys, freeSpaceOffset, next;
+        memcpy(&flag, page, 4);
+        memcpy(&numKeys, page + 4, 4);
+        memcpy(&freeSpaceOffset, page + 8, 4);
+        memcpy(&next, page + 12, 4);
+
+        // if pageNum page is a leaf,
+        if (flag == LEAF_NODE) {
+            int entryOffset = findLeafEntry(attribute, page, numKeys, key, rid);
+            if (entryOffset < 0) return -1; // entry not found
+
+            int entrySize = leafEntrySize(attribute, page + entryOffset); // # of bytes to remove
+            int remBytes = freeSpaceOffset - (entryOffset + entrySize);
+            memmove(page + entryOffset, page + entryOffset + entrySize, remBytes); // shift entries left, decrement numkeys and spaceoffset, write page
+
+            numKeys -= 1;
+            freeSpaceOffset -= entrySize;
+            memcpy(page + 4, &numKeys, 4);
+            memcpy(page + 8, &freeSpaceOffset, 4);
+
+            if (ixFileHandle.writePage(pageNum, page) != 0) return -1;
+            // if numkeys < min, signal underflow to caller
+            if (freeSpaceOffset - METADATA_SIZE < MIN_DATA_BYTES) underflow = true;
+
+            return 0;
+        }
+        
+        // internal node
+        // find which child covers key K, recurse into it
+        int childIdx = findInternalChildIds(attribute, page, numKeys, key);
+        PageNum childPage;
+        int childPtrOffset = METADATA_SIZE; // offset of the idx-th child pointer
+        if (attribute.type == TypeVarChar) {
+            if (childIdx == 0) {
+                childPtrOffset = METADATA_SIZE;
+            } else {
+                char *p = page + METADATA_SIZE + 4; // skip ptr0
+                for (int i = 0; i < childIdx; i++) {
+                    int currentLen;
+                    memcpy(&currentLen, p, 4);
+                    p += 4 + currentLen + 4; // skip this key + next pointer
+                }
+                childPtrOffset = METADATA_SIZE + childIdx * (KEY_SIZE + 4);
+            }
+        }
+
+        memcpy(&childPage, page + childPtrOffset, 4);
+
+        // RECURSIVE PART
+        bool childUnderflow = false;
+        if (del(ixFileHandle, childPage, attribute, key, rid, childUnderflow) != 0) return -1;
+        if (!childUnderflow) return 0; // we done, no redistribution needed
+        
+        // if child signaled underflow
+        // if (redistributeOrMergeEntries(ixFileHandle, attribute, page, pageNum, numKeys, freeSpaceOffset, childIdx) != 0) return -1;
+        // // if internal node is now below half full, signal up
+        // memcpy(&numKeys, page + 4, 4);
+        // memcpy(&freeSpaceOffset, page + 8, 4);
+
+        if (freeSpaceOffset - METADATA_SIZE < MIN_DATA_BYTES) underflow = true;
+                    // merge with sibling and remove into separate key from this node
+                    // if removing key makes node drop below win, signal underflow upwards
+        return 0;
     }
 
     RC
