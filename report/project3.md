@@ -11,9 +11,18 @@
 
 
 ### 2. Meta-data page in an index file
-- Show your meta-data page of an index design if you have any. 
+- Show your meta-data page of an index design if you have any.
 
+PAge 0 is our hidden metadata page. WE store the root number, read, write, and append counters on it. We use this so that the data can persist across different open and closes.
 
+Structure of the index
+
+Keys are X bytes bc int, real, varchar types are diff sizes
+
+Page Metadata: 
+4 bytes for leaf or middle node flag | 4 bytes for number of keys | 4 bytes for free space offset | LEAF ONLY: pointer to next leaf page (unused for internal)
+We need the free space offset only for varchar because the varchars can be diff lengths, but int and reals
+will always be the same
 
 ### 3. Index Entry Format
 - Show your index entry design (structure). 
@@ -41,17 +50,29 @@
 
 
 ### 4. Page Format
+
 - Show your internal-page (non-leaf node) design.
 
+  X = size of the key data type in bytes
+
+Actual Data for Intermediatary Nodes:
+4 bytes for the first pointer | X bytes for the key | 4 bytes for the next pointer | X bytes for the next key | ...
+We need a pointer before and not only just after since everything less than the key will be at the first pointer
+everything greater will be at the next
 
 
 - Show your leaf-page (leaf node) design.
 
+X = size of the key data type in bytes
 
+Actual Data for Leaf Nodes:
+X bytes for the key | RID ( 4 bytes for page number, 2 bytes for slot number)
 
 ### 5. Describe the following operation logic.
 - Split
+When we insert onto a full leaf, we split it by copying all the entries into a buffer. We then insert the new key into its correct spot and then divide the entries in half. We write the first half of entries back to the first original page we grabbed evertthing from. Then we write the second half to a new page that we append after we are done. We make sure to change the leaves accordingly, new page gets the old pages next leaf, and the old page gets new page as its next leaf. We make sure to change all the metadata for both pages accordingly. Then we propogate the separator back and its page, which is the smallest key of the new page we just created.
 
+Internal splits are similar instead of copying the smallest key of the new page, it propogates that key up. We do the same thing by putting the first half on the original page, and then the rest of the keys go on the new page. The splits can propogate up and we make sure to check that if it reaches the root we split the root accordingly as well.
 
 
 - Rotation
@@ -78,6 +99,7 @@ We implemented a full non-lazy deletion with both redistribution and merging of 
 ### 6. Implementation Detail
 - Have you added your own module or source file (.cc or .h)? 
   Clearly list the changes on files and CMakeLists.txt, if any.
+  N/A
 
 
 
