@@ -122,8 +122,7 @@ namespace PeterDB {
         std::vector<char> lastKey;  // last key returned (for resume after delete)
         RID lastRid = {0, 0};
         bool hasLast = false;
-        std::vector<unsigned> seenPages;        // rid pages already returned for current key
-        std::vector<unsigned short> seenSlots;  // rid slots already returned for current key
+        int lastNumKeys = -1;
     };
 
     class IXFileHandle {
