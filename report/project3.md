@@ -90,10 +90,11 @@ We implemented a full non-lazy deletion with both redistribution and merging of 
 
 - Duplicate key span in a page
 
+Duplicate keys are stored based on insertion order, but they just follow one after another. Each duplicate entry should have a unique (key, RID) because they are distinct. When trying to delete, it makes sure to properly match on the key and RID. The scan will look at all the entries with that key. 
 
 
 - Duplicate key span multiple pages (if applicable)
-
+Whne there are too many duplicates, the rest will persist onto the next page. If there;s a split they'll still be next to each other since they are contigious. When scanning our functions land on the first leaf that can hold the key to make sure that we get all entries. 
 
 
 ### 6. Implementation Detail
@@ -109,6 +110,8 @@ We implemented a full non-lazy deletion with both redistribution and merging of 
 
 ### 7. Member contribution (for team of two)
 - Explain how you distribute the workload in team.
+  Lawrence Zhou: insertEntry logic, debugging, index structure
+  Angelina Wang: deleteEntry, printTree, scan, file handling
 
 
 
