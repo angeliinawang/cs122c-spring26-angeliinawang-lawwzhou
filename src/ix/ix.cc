@@ -11,6 +11,9 @@
             int internalChildPtrOffsetAt(const Attribute &attribute, const char *page, int idx);
             int internalKeyOffsetAt(const Attribute &attribute, const char *page, int idx);
             RC leafEntrySize(const Attribute &attribute, const char *entry);
+            RC findInternalChildIdsLeft(const Attribute &attribute, char *page, int numKeys, const void *key);
+            PageNum findStartingLeaf(IXFileHandle &ixFileHandle, const Attribute &attribute, const void *lowKey);            
+
 
             RC IndexManager::createFile(const std::string &fileName) {
                 auto &pfm = PagedFileManager::instance();
@@ -141,6 +144,33 @@
                     p += keyLen + 4; // go to the next key + child pointer after that
                 }
                     return numKeys;
+            }
+
+            RC findInternalChildIdsLeft(const Attribute &attribute, char *page, int numKeys, const void *key) {
+                char *p = page + METADATA_SIZE + 4;
+                for (int i = 0; i < numKeys; i++) {
+                    int keyLen = (attribute.type == TypeVarChar) ? (*(int*)p + 4) : 4;
+                    int cmp;
+                    if (attribute.type == TypeVarChar) {
+                        int currentLen, targetLen;
+                        memcpy(&currentLen, p, 4);
+                        memcpy(&targetLen, key, 4);
+                        int minLen = (currentLen < targetLen) ? currentLen : targetLen;
+                        cmp = memcmp((char*)key + 4, p + 4, minLen);
+                        if (cmp == 0) cmp = (targetLen < currentLen) ? -1 : (targetLen > currentLen ? 1 : 0);
+                    } else if (attribute.type == TypeInt) {
+                        int currKey = *(int*)p;
+                        int newKey = *(int*)key;
+                        cmp = (newKey < currKey) ? -1 : (newKey > currKey ? 1 : 0);
+                    } else {
+                        float currKey = *(float*)p;
+                        float newKey = *(float*)key;
+                        cmp = (newKey < currKey) ? -1 : (newKey > currKey ? 1 : 0);
+                    }
+                    if (cmp <= 0) return i;
+                    p += keyLen + 4;
+                }
+                return numKeys;
             }
 
             RC insertWithSpaceLeaf(IXFileHandle &ixFileHandle, const Attribute &attribute, const PageNum &pageNum, const void *key, const RID &rid, char (&page)[PAGE_SIZE],
@@ -652,10 +682,13 @@
                         rightFSO = sibFSO; rightNumKeys = sibNumKeys; rightNext = sibNext;
                     }
 
-                    int rightDataBytes = rightFSO - METADATA_SIZE;
-                    memcpy(leftPage + leftFSO, rightPage + METADATA_SIZE, rightDataBytes);
-                    leftNumKeys += rightNumKeys;
-                    leftFSO += rightDataBytes;
+                int rightDataBytes = rightFSO - METADATA_SIZE;
+                if (leftFSO + rightDataBytes > PAGE_SIZE) {
+                    return 0;  // can't merge - leave as is
+                }
+                memcpy(leftPage + leftFSO, rightPage + METADATA_SIZE, rightDataBytes);
+                leftNumKeys += rightNumKeys;
+                leftFSO += rightDataBytes;
 
                     memcpy(leftPage + 4, &leftNumKeys, 4);
                     memcpy(leftPage + 8, &leftFSO, 4);
@@ -781,11 +814,17 @@
 
                 int sepOffset = internalKeyOffsetAt(attribute, parentPage, sepKeyIdx);
                 int sepLen = keyLenAt(attribute, parentPage + sepOffset);
+                int rightDataBytes = rightFSO - METADATA_SIZE;
+
+                // check if merge would overflow page
+                if (leftFSO + sepLen + rightDataBytes > PAGE_SIZE) {
+                    return 0;  // can't merge - leave as is
+                }
 
                 // append [parent_sep][all of right's data] to left
                 memcpy(leftPage + leftFSO, parentPage + sepOffset, sepLen);
-                int rightDataBytes = rightFSO - METADATA_SIZE;
                 memcpy(leftPage + leftFSO + sepLen, rightPage + METADATA_SIZE, rightDataBytes);
+                
 
                 leftNumKeys = leftNumKeys + 1 + rightNumKeys;
                 leftFSO = leftFSO + sepLen + rightDataBytes;
@@ -871,34 +910,64 @@
                 // if pageNum page is a leaf,
                 if (flag == LEAF_NODE) {
                     int entryOffset = findLeafEntry(attribute, page, numKeys, key, rid);
-                    if (entryOffset < 0) return -1; // entry not found
-
-                    int entrySize = leafEntrySize(attribute, page + entryOffset); // # of bytes to remove
-                    int remBytes = freeSpaceOffset - (entryOffset + entrySize);
-                    memmove(page + entryOffset, page + entryOffset + entrySize, remBytes); // shift entries left, decrement numkeys and spaceoffset, write page
-
-                    numKeys -= 1;
-                    freeSpaceOffset -= entrySize;
-                    memcpy(page + 4, &numKeys, 4);
-                    memcpy(page + 8, &freeSpaceOffset, 4);
-
-                    if (ixFileHandle.writePage(pageNum, page) != 0) return -1;
-                    // if numkeys < min, signal underflow to caller
-                    if (freeSpaceOffset - METADATA_SIZE < MIN_DATA_BYTES) underflow = true;
-
+                    
+                    // For duplicates spanning pages, the entry might be on a later leaf
+                    PageNum searchPageNum = pageNum;
+                    char searchPage[PAGE_SIZE];
+                    memcpy(searchPage, page, PAGE_SIZE);
+                    int searchNumKeys = numKeys;
+                    int searchFSO = freeSpaceOffset;
+                    int searchNext = next;
+                    
+                    while (entryOffset < 0 && searchNext != 0) {
+                        if (ixFileHandle.readPage(searchNext, searchPage) != 0) return -1;
+                        memcpy(&searchNumKeys, searchPage + 4, 4);
+                        memcpy(&searchFSO, searchPage + 8, 4);
+                        searchPageNum = searchNext;
+                        memcpy(&searchNext, searchPage + 12, 4);
+                        
+                        // check if first key on this page is still <= key (otherwise gone past)
+                        if (searchNumKeys == 0) continue;
+                        if (compareKeys(attribute, searchPage + METADATA_SIZE, key) > 0) break;
+                        
+                        entryOffset = findLeafEntry(attribute, searchPage, searchNumKeys, key, rid);
+                    }
+                    
+                    if (entryOffset < 0) {
+                        return -1;
+                    }
+                    
+                    // delete from whichever page we found it
+                    int entrySize = leafEntrySize(attribute, searchPage + entryOffset);
+                    int remBytes = searchFSO - (entryOffset + entrySize);
+                    memmove(searchPage + entryOffset, searchPage + entryOffset + entrySize, remBytes);
+                    
+                    searchNumKeys -= 1;
+                    searchFSO -= entrySize;
+                    memcpy(searchPage + 4, &searchNumKeys, 4);
+                    memcpy(searchPage + 8, &searchFSO, 4);
+                    
+                    if (ixFileHandle.writePage(searchPageNum, searchPage) != 0) return -1;
+                    
+                    // only signal underflow if it's the original page (don't cascade for sibling deletes)
+                    if (searchPageNum == pageNum && searchFSO - METADATA_SIZE < MIN_DATA_BYTES) {
+                        underflow = true;
+                    }
+                    
                     return 0;
                 }
                 
                 // internal node
                 // find which child covers key K, recurse into it
-                int childIdx = findInternalChildIds(attribute, page, numKeys, key);
+                int childIdx = findInternalChildIdsLeft(attribute, page, numKeys, key);
                 PageNum childPage;
                 int childPtrOffset = internalChildPtrOffsetAt(attribute, page, childIdx);
                 memcpy(&childPage, page + childPtrOffset, 4);
 
-                // RECURSIVE PART
                 bool childUnderflow = false;
-                if (del(ixFileHandle, childPage, attribute, key, rid, childUnderflow) != 0) return -1;
+                if (del(ixFileHandle, childPage, attribute, key, rid, childUnderflow) != 0) {
+                    return -1;
+                }
                 if (!childUnderflow) return 0; // we done, no redistribution needed
                 
                 // if child signaled underflow
@@ -1008,7 +1077,7 @@
                                 memcpy(&currentLen, p, 4);
                                 memcpy(&targetLen, lowKey, 4);
                                 int minLen = (currentLen < targetLen) ? currentLen : targetLen;
-                                cmp = memcmp(p + 4, (char*)lowKey + 4, minLen);
+                                cmp = memcmp((char*)lowKey + 4, p + 4, minLen);
                                 if (cmp == 0) {
                                     cmp = (targetLen < currentLen) ? -1 : (targetLen > currentLen ? 1 : 0);
                                 }
@@ -1021,7 +1090,7 @@
                                 float newKey = *(float*)lowKey;
                                 cmp = (newKey < currKey) ? -1 : (newKey > currKey ? 1 : 0);
                             }
-                            if (cmp >= 0) { // key <= separator → go left to child i
+                            if (cmp <= 0) { // lowKey <= separator → go left to child i
                                 childIdx = i;
                                 break;
                             }
@@ -1232,56 +1301,120 @@
             IX_ScanIterator::~IX_ScanIterator() {
             }
 
-            RC IX_ScanIterator::getNextEntry(RID &rid, void *key) {
+        RC IX_ScanIterator::getNextEntry(RID &rid, void *key) {
                 if (!isOpen || exhausted) return IX_EOF;
 
+                // start search from the leaf holding lastKey (or lowKey if nothing returned yet)
+                const void *searchKey = nullptr;
+                if (hasLast) {
+                    searchKey = lastKey.data();
+                }
+                else if (!lowKey.empty()) {
+                    searchKey = lowKey.data();
+                }
+
+                // re-navigate from the root every call so merges can't strand us on a dead page
+                PageNum leafPage = findStartingLeaf(*ixFileHandle, attribute, searchKey);
+                if (leafPage == 0) {
+                    exhausted = true;
+                    return IX_EOF;
+                }
+
+                currentPageNum = leafPage;
+                if (ixFileHandle->readPage(currentPageNum, currentPage) != 0) {
+                    exhausted = true;
+                    return IX_EOF;
+                }
+
                 while (true) {
-                    int numKeys, nextLeaf;
-                    memcpy(&numKeys,  currentPage + 4,  4);
+                    int flag, numKeys, nextLeaf;
+                    memcpy(&flag, currentPage, 4);
+                    memcpy(&numKeys, currentPage + 4, 4);
                     memcpy(&nextLeaf, currentPage + 12, 4);
 
-                    // exhausted this leaf → move to next, or end of scan
-                    if (currentEntryIdx >= numKeys) {
-                        if (nextLeaf == 0) { exhausted = true; return IX_EOF; }
-                        if (nextLeaf == currentPageNum) { exhausted = true; return IX_EOF; }
-                        currentPageNum = nextLeaf;
-                        if (ixFileHandle->readPage(currentPageNum, currentPage) != 0) {
-                            exhausted = true;
-                            return IX_EOF;
-                        }
-                        currentEntryIdx = 0;
-                        continue;
+                    if (flag != LEAF_NODE) {
+                        exhausted = true;
+                        return IX_EOF;
                     }
 
-                    // walk to the currentEntryIdx-th entry on this page
                     char *p = currentPage + METADATA_SIZE;
-                    for (int i = 0; i < currentEntryIdx; i++) {
-                        p += leafEntrySize(attribute, p);
-                    }
-                    int entrySize = leafEntrySize(attribute, p);
+                    for (int i = 0; i < numKeys; i++) {
+                        int entrySize = leafEntrySize(attribute, p);
+                        int keyLen = entrySize - RID_SIZE;
 
-                    // check upper bound
-                    if (!highKey.empty()) {
-                        int cmp = compareKeys(attribute, p, highKey.data());
-                        if (cmp > 0 || (cmp == 0 && !highKeyInclusive)) {
-                            exhausted = true;
-                            return IX_EOF;
+                        unsigned ridPage;
+                        unsigned short ridSlot;
+                        memcpy(&ridPage, p + keyLen, 4);
+                        memcpy(&ridSlot, p + keyLen + 4, 2);
+
+                        bool ok = true;
+
+                        if (hasLast) {
+                            int cmp = compareKeys(attribute, p, lastKey.data());
+                            if (cmp < 0) {
+                                // key smaller than where we are, skip
+                                ok = false;
+                            }
+                            else if (cmp == 0) {
+                                // same key as last: skip any rid we've already returned for it
+                                for (size_t s = 0; s < seenPages.size(); s++) {
+                                    if (seenPages[s] == ridPage && seenSlots[s] == ridSlot) {
+                                        ok = false;
+                                        break;
+                                    }
+                                }
+                            }
+                            // cmp > 0 means a brand new bigger key, always ok
                         }
+                        else if (!lowKey.empty()) {
+                            int cmp = compareKeys(attribute, p, lowKey.data());
+                            if (cmp < 0 || (cmp == 0 && !lowKeyInclusive)) {
+                                ok = false;
+                            }
+                        }
+
+                        if (ok) {
+                            // upper bound check
+                            if (!highKey.empty()) {
+                                int cmp = compareKeys(attribute, p, highKey.data());
+                                if (cmp > 0 || (cmp == 0 && !highKeyInclusive)) {
+                                    exhausted = true;
+                                    return IX_EOF;
+                                }
+                            }
+
+                            memcpy(key, p, keyLen);
+                            rid.pageNum = ridPage;
+                            rid.slotNum = ridSlot;
+
+                            // if this is a different key than last time, reset the seen list
+                            bool sameKey = hasLast && compareKeys(attribute, p, lastKey.data()) == 0;
+                            if (!sameKey) {
+                                seenPages.clear();
+                                seenSlots.clear();
+                            }
+                            seenPages.push_back(ridPage);
+                            seenSlots.push_back(ridSlot);
+
+                            lastKey.assign(p, p + keyLen);
+                            lastRid = rid;
+                            hasLast = true;
+                            return 0;
+                        }
+
+                        p += entrySize;
                     }
 
-                    // copy key out (everything except the 6-byte RID at the end)
-                    int keyLen = entrySize - RID_SIZE;
-                    memcpy(key, p, keyLen);
-
-                    unsigned ridPage;
-                    unsigned short ridSlot;
-                    memcpy(&ridPage, p + keyLen,     4);
-                    memcpy(&ridSlot, p + keyLen + 4, 2);
-                    rid.pageNum = ridPage;
-                    rid.slotNum = ridSlot;
-
-                    currentEntryIdx++;
-                    return 0;
+                    // walk to next leaf
+                    if (nextLeaf == 0 || nextLeaf == currentPageNum) {
+                        exhausted = true;
+                        return IX_EOF;
+                    }
+                    currentPageNum = nextLeaf;
+                    if (ixFileHandle->readPage(currentPageNum, currentPage) != 0) {
+                        exhausted = true;
+                        return IX_EOF;
+                    }
                 }
             }
 
@@ -1290,6 +1423,10 @@
                 exhausted = true;
                 lowKey.clear();
                 highKey.clear();
+                lastKey.clear();
+                hasLast = false;
+                seenPages.clear();
+                seenSlots.clear();
                 ixFileHandle = nullptr;
                 currentEntryIdx = 0;
                 return 0;

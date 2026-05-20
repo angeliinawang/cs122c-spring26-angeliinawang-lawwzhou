@@ -119,6 +119,11 @@ namespace PeterDB {
         PageNum currentPageNum = 0;
         bool isOpen = false;
         bool exhausted = false;
+        std::vector<char> lastKey;  // last key returned (for resume after delete)
+        RID lastRid = {0, 0};
+        bool hasLast = false;
+        std::vector<unsigned> seenPages;        // rid pages already returned for current key
+        std::vector<unsigned short> seenSlots;  // rid slots already returned for current key
     };
 
     class IXFileHandle {
