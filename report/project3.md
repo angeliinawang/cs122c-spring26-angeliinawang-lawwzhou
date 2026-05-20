@@ -99,11 +99,12 @@ We implemented a full non-lazy deletion with both redistribution and merging of 
 
 - Duplicate key span in a page
 
-Duplicate keys are stored based on insertion order, but they just follow one after another. Each duplicate entry should have a unique (key, RID) because they are distinct. When trying to delete, it makes sure to properly match on the key and RID. The scan will look at all the entries with that key. 
+Duplicate keys are stored based on insertion order, but they just follow one after another, each as its own full `[key][RID]` entry. On insert, `findInsertPos` places a new duplicate after all existing entries with the same key, keeping the group contiguous. Each duplicate entry should have a unique (key, RID) because they are distinct, so delete matches on BOTH key and RID to remove just one, and the scan walks the leaf by position so it returns each duplicate once (even when the two entries are identical byte-wise).
 
 
 - Duplicate key span multiple pages (if applicable)
-Whne there are too many duplicates, the rest will persist onto the next page. If there;s a split they'll still be next to each other since they are contigious. When scanning our functions land on the first leaf that can hold the key to make sure that we get all entries. 
+
+When there are too many duplicates, the rest will persist onto the next page, with the leaves linked through the `next` pointers. If there's a split they'll still be next to each other since they are contiguous, but the split point can land mid-run, so the separator pushed up to the parent ends up equal to the duplicate key. When scanning, our functions land on the first leaf that can hold the key (descent "goes left on equality") to make sure that we get all entries, then walk forward through the `next` chain. Delete does the same: if the exact (key, RID) isn't on the first leaf, it follows `next` until it finds it or passes the key.
 
 
 ### 6. Implementation Detail
@@ -115,12 +116,18 @@ Whne there are too many duplicates, the rest will persist onto the next page. If
 
 - Other implementation details:
 
+  - Both `insertEntry` and `deleteEntry` are recursive top-down traversals. Splits and underflows are passed back up through out-parameters (a new child key/page on insert, a single `bool&` underflow flag on delete) so each level only fixes its own node.
+  - An empty tree is represented by `rootPageNum == 0`, and the root page number is reloaded from the hidden page on open so the tree survives close/reopen.
+  - All three key types are compared through one shared `compareKeys` helper, and every page tracks a free-space offset so variable-length VarChar entries can be packed without gaps.
+  - On merge, the emptied page is orphaned (no free-page list), and a root that drops to zero keys is collapsed so the tree is one level shorter.
+  - The scan iterator serves entries by position from a cached leaf, but re-reads the page at each boundary so it stays correct even when entries are deleted (and pages merge/redistribute) in the middle of an active scan.
 
 
 ### 7. Member contribution (for team of two)
 - Explain how you distribute the workload in team.
-  Lawrence Zhou: insertEntry logic, debugging, index structure
-  Angelina Wang: deleteEntry, printTree, scan, file handling
+
+  **Lawrence Zhou:** implemented `insertEntry`, designed the overall index structure, and debugging.
+  **Angelina Wang:** implemented `deleteEntry`, `printBTree`, the scan iterator, and the file handling.
 
 
 

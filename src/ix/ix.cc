@@ -666,7 +666,7 @@
                         return 0;
                     }
 
-                    // MERGEEE leaf babies
+                    // merge leaf nodes
                     char *leftPage, *rightPage;
                     PageNum leftPageNum, rightPageNum;
                     int leftFSO, leftNumKeys, rightFSO, rightNumKeys, rightNext;
