@@ -266,6 +266,39 @@ namespace PeterDB {
         return 0;
     }
 
+    RC insertWithSpaceInternal(IXFileHandle &ixFileHandle, const Attribute &attribute, const PageNum &pageNum, const void *key, PageNum childPage, char (&page)[PAGE_SIZE], int numKeys, int freeSpaceOffset) {
+        int keyLen = keyLenAt(attribute, (char*)key);
+        int entrySize = keyLen + PTR_SIZE;
+
+        // find insert position by walking keys
+        char *p = page + METADATA_SIZE + PTR_SIZE;  // skip first ptr to get to first key
+        char *insertptr = page + freeSpaceOffset;
+        for (int i = 0; i < numKeys; i++) {
+            if (compareKeys(attribute, key, p) < 0) {
+                insertptr = p;
+                break;
+            }
+            p += keyLenAt(attribute, p) + PTR_SIZE;
+        }
+
+        // shift everything right to make space
+        char *dataEnd = page + freeSpaceOffset;
+        int bytes = dataEnd - insertptr;
+        memmove(insertptr + entrySize, insertptr, bytes);
+
+        // write key then child pointer after it
+        memcpy(insertptr, key, keyLen);
+        memcpy(insertptr + keyLen, &childPage, PTR_SIZE);
+
+        // update metadata
+        numKeys += 1;
+        freeSpaceOffset += entrySize;
+        memcpy(page + 4, &numKeys, 4);
+        memcpy(page + 8, &freeSpaceOffset, 4);
+        ixFileHandle.writePage(pageNum, page);
+        return 0;
+    }
+
     RC insert(IXFileHandle &ixFileHandle, PageNum pageNum, const Attribute &attribute, const void *key, const RID &rid, void *&newChildKey, PageNum &newChildPage) {
         // following the algorithm from the slides
         // if the node is a leaf node
@@ -280,16 +313,16 @@ namespace PeterDB {
         memcpy(&numKeys, pageptr + 4, 4);
         memcpy(&freeSpaceOffset, pageptr + 8, 4);
         memcpy(&next, pageptr + 12, 4);
+        int keySize; 
+        if (attribute.type == TypeVarChar) {
+            memcpy(&keySize, key, 4);
+            keySize += 4;
+        }
+        else {
+            keySize = 4;
+        }
         if (flag == LEAF_NODE) {
             // differentiate ints and reals vs varchars to calculate space needed
-            int keySize; 
-            if (attribute.type == TypeVarChar) {
-                memcpy(&keySize, key, 4);
-                keySize += 4;
-            }
-            else {
-                keySize = 4;
-            }
             // if there is space
             if (keySize + freeSpaceOffset + RID_SIZE <= PAGE_SIZE) {
                 // insert the the value into the correct spot and shift everything else over
@@ -303,8 +336,8 @@ namespace PeterDB {
             }
         }
         // if the node is an internal node
-            // keep going down until you find the correct leaf node to insert into
-            // if newChildKey and newChildPage come back with values, you have to insert that into this internal node
+        // keep going down until you find the correct leaf node to insert into
+        // if newChildKey and newChildPage come back with values, you have to insert that into this internal node
         else {
             // choose subtree
             int childIndex = findInternalChildIds(attribute, page, numKeys, key);
@@ -322,8 +355,15 @@ namespace PeterDB {
             else {
                 memcpy(&childPage, page + METADATA_SIZE + childIndex * (PTR_SIZE + KEY_SIZE), PTR_SIZE);
             }
-            insert(ixFileHandle, childPage, attribute, key, rid, newChildKey, newChildPage);
-            // recursively insert
+            insert(ixFileHandle, childPage, attribute, key, rid, newChildKey, newChildPage); // recursively insert
+            if (!newChildKey) return 0;
+            // we split something in child we must insert newchildentry somewhere here
+            if (keySize + freeSpaceOffset + PTR_SIZE <= PAGE_SIZE) {
+                // insert the the value into the correct spot and shift everything else over
+                if (insertWithSpaceInternal(ixFileHandle, attribute, pageNum, newChildKey, newChildPage, page, numKeys, freeSpaceOffset) != 0) return -1;
+                return 0;
+            }
+            insertSplitInternal()
             // check childEntry in case of split below
 
         }
