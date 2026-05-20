@@ -1304,49 +1304,90 @@
         RC IX_ScanIterator::getNextEntry(RID &rid, void *key) {
                 if (!isOpen || exhausted) return IX_EOF;
 
+                bool refreshed = false;
                 while (true) {
-                    int numKeys, nextLeaf;
-                    memcpy(&numKeys,  currentPage + 4,  4);
-                    memcpy(&nextLeaf, currentPage + 12, 4);
+                    int numKeys;
+                    memcpy(&numKeys, currentPage + 4, 4);
 
-                    if (currentEntryIdx >= numKeys) {
-                        if (nextLeaf == 0) { exhausted = true; return IX_EOF; }
-                        if (nextLeaf == currentPageNum) { exhausted = true; return IX_EOF; }
-                        currentPageNum = nextLeaf;
+                    if (currentEntryIdx < numKeys) {
+                        char *p = currentPage + METADATA_SIZE;
+                        for (int i = 0; i < currentEntryIdx; i++) {
+                            p += leafEntrySize(attribute, p);
+                        }
+                        int entrySize = leafEntrySize(attribute, p);
+
+                        if (!highKey.empty()) {
+                            int cmp = compareKeys(attribute, p, highKey.data());
+                            if (cmp > 0 || (cmp == 0 && !highKeyInclusive)) {
+                                exhausted = true;
+                                return IX_EOF;
+                            }
+                        }
+
+                        int keyLen = entrySize - RID_SIZE;
+                        memcpy(key, p, keyLen);
+
+                        unsigned ridPage;
+                        unsigned short ridSlot;
+                        memcpy(&ridPage, p + keyLen, 4);
+                        memcpy(&ridSlot, p + keyLen + 4, 2);
+                        rid.pageNum = ridPage;
+                        rid.slotNum = ridSlot;
+
+                        lastKey.assign(p, p + keyLen);
+                        lastRid = rid;
+                        hasLast = true;
+                        currentEntryIdx++;
+                        return 0;
+                    }
+
+                    // re-read current page once to pick up entries that delete may
+                    // have pulled in from the right sibling since we cached it
+                    if (hasLast && !refreshed) {
+                        char snapshot[PAGE_SIZE];
+                        memcpy(snapshot, currentPage, PAGE_SIZE);
+                        int snapNumKeys = numKeys;
+
                         if (ixFileHandle->readPage(currentPageNum, currentPage) != 0) {
                             exhausted = true;
                             return IX_EOF;
                         }
-                        currentEntryIdx = 0;
-                        continue;
-                    }
+                        refreshed = true;
 
-                    char *p = currentPage + METADATA_SIZE;
-                    for (int i = 0; i < currentEntryIdx; i++) {
-                        p += leafEntrySize(attribute, p);
-                    }
-                    int entrySize = leafEntrySize(attribute, p);
+                        int freshNumKeys;
+                        memcpy(&freshNumKeys, currentPage + 4, 4);
 
-                    if (!highKey.empty()) {
-                        int cmp = compareKeys(attribute, p, highKey.data());
-                        if (cmp > 0 || (cmp == 0 && !highKeyInclusive)) {
-                            exhausted = true;
-                            return IX_EOF;
+                        bool changed = (freshNumKeys != snapNumKeys) ||
+                                       memcmp(snapshot + METADATA_SIZE, currentPage + METADATA_SIZE,
+                                              PAGE_SIZE - METADATA_SIZE) != 0;
+
+                        if (changed) {
+                            int idx = freshNumKeys;
+                            char *p = currentPage + METADATA_SIZE;
+                            for (int i = 0; i < freshNumKeys; i++) {
+                                if (compareKeys(attribute, p, lastKey.data()) >= 0) { idx = i; break; }
+                                p += leafEntrySize(attribute, p);
+                            }
+                            currentEntryIdx = idx;
+                            continue;  // serve from idx, or fall through to advance if none
                         }
+                        // nothing new arrived, advance to the next leaf below
                     }
 
-                    int keyLen = entrySize - RID_SIZE;
-                    memcpy(key, p, keyLen);
-
-                    unsigned ridPage;
-                    unsigned short ridSlot;
-                    memcpy(&ridPage, p + keyLen,     4);
-                    memcpy(&ridSlot, p + keyLen + 4, 2);
-                    rid.pageNum = ridPage;
-                    rid.slotNum = ridSlot;
-
-                    currentEntryIdx++;
-                    return 0;
+                    // completely done with this leaf, walk forward along sibling chain
+                    int nextLeaf;
+                    memcpy(&nextLeaf, currentPage + 12, 4);
+                    if (nextLeaf == 0 || nextLeaf == currentPageNum) {
+                        exhausted = true;
+                        return IX_EOF;
+                    }
+                    currentPageNum = nextLeaf;
+                    if (ixFileHandle->readPage(currentPageNum, currentPage) != 0) {
+                        exhausted = true;
+                        return IX_EOF;
+                    }
+                    currentEntryIdx = 0;
+                    refreshed = false;  // a fresh leaf gets its own boundary re-read later
                 }
             }
 
