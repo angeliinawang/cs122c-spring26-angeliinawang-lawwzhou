@@ -56,6 +56,15 @@
 
 - Rotation
 
+We implemented rotation separately for leaf rotation and internal rotation. When a child underflows, `redistributeOrMergeEntries` will pick a sibling, preferably the left and identify the parent's separator key `sepKeyIdx` sitting between the child and that sibling. If the sibling has extra payload, then rotation is needed.
+
+**Leaf Rotation:** slides one data entry from the sibling into the underflowing leaf, and fixes the parent separator. If borrowing from the left sibling, it takes the sibling's last entry and prepends it to the front of the child (it used to be the largest key on the left, but is now the smallest key on the right). If borrowing from the right sibling, it takes the sibling's first entry and appends it to the end of the child.
+
+After the move, the separator key is updated since the boundary between the two leaves has shifted. The separator is set to the smallest key now on the right-hand page (only COPY key, not the RID, since separators don't carry RIDs). It shifts the rest of the parent over to fit the new separator and adjusts the parent's free-space offset.
+
+**Internal Rotation:** because internal keys are routing separators, internal rotation will be a 30way rotation through the parent. Nothing is copied and all the keys will physically cycle from parent -> child, sibling -> parent. If borrowing from the left sibling, the parent's separator key moves down and becomes the first key in the child. The sibling's last child-pointer will then move over to become the child's first pointer. The sibling's last key moves up and replace's the parent's separator. The sibling then drops its last (key + pointer). If borrowing from the right sibling, the parent's separator key moves down to the end of the child. THe sibling's first pointer moves to the end of the child. The sibling's first key then moves up to replace the parent's separator. The sibling drops its first (pointer + key).
+
+Overall, an internal node will always have exactly one more pointer than keys.
 
 - Merge/non-lazy deletion
 
