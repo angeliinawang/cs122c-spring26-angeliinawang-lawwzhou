@@ -4,6 +4,7 @@
 #include <cmath>
 #include <algorithm>
 #include <vector>
+#include <unistd.h>
 
 namespace PeterDB {
     RelationManager &RelationManager::instance() {
@@ -18,6 +19,16 @@ namespace PeterDB {
     RelationManager::RelationManager(const RelationManager &) = default;
 
     RelationManager &RelationManager::operator=(const RelationManager &) = default;
+
+    static std::vector<Attribute> indexedAttrs(
+        const std::string &tableName, const std::vector<Attribute> &attrs) {
+        std::vector<Attribute> out;
+        for (const auto &a : attrs) {
+            std::string f = tableName + "_" + a.name + ".idx";
+            if (access(f.c_str(), F_OK) == 0) out.push_back(a);
+        }
+        return out;
+    }
 
     RC RelationManager::createCatalog() {
         // check whether catalog exists already, also create two files
@@ -196,6 +207,11 @@ namespace PeterDB {
     RC RelationManager::deleteTable(const std::string &tableName) {
         if (tableName == "Tables" || tableName == "Columns") return -1;
 
+        // snapshot the schema BEFORE catalog rows get deleted so we know
+        // which <table>_<attr>.idx files to clean up at the end
+        std::vector<Attribute> attrsForCleanup;
+        getAttributes(tableName, attrsForCleanup);
+
         auto &rbfm = RecordBasedFileManager::instance();
         FileHandle tFH, cFH;
         if (rbfm.openFile("Tables",  tFH) != 0) return -1;
@@ -247,6 +263,12 @@ namespace PeterDB {
         rbfm.deleteRecord(tFH, tablesSchema, tablesRid);
         for (const auto &cr : columnRids) {
             rbfm.deleteRecord(cFH, columnsSchema, cr);
+        }
+
+        // drop any indexes attached to this table; destroyFile is a no-op if the file doesn't exist
+        auto &ix = IndexManager::instance();
+        for (const auto &a : attrsForCleanup) {
+            ix.destroyFile(tableName + "_" + a.name + ".idx");
         }
 
         // destroy the user >:)
@@ -342,6 +364,19 @@ namespace PeterDB {
             rbfm.closeFile(fileHandle);
             return -1;
         }
+
+        // insert into each existing index after the record insert succeeds
+        auto &ix = IndexManager::instance();
+        for (const auto &attr : indexedAttrs(tableName, attrs)) {
+            char buf[PAGE_SIZE];
+            if (rbfm.readAttribute(fileHandle, attrs, rid, attr.name, buf) != 0) continue;
+            if (buf[0] & 0x80) continue;  // NULL value — skip
+            IXFileHandle ixFH;
+            if (ix.openFile(tableName + "_" + attr.name + ".idx", ixFH) != 0) continue;
+            ix.insertEntry(ixFH, attr, buf + 1, rid);   // +1 skips the 1-byte null bitmap
+            ix.closeFile(ixFH);
+        }
+
         rbfm.closeFile(fileHandle);
         return 0;
     }
@@ -353,6 +388,20 @@ namespace PeterDB {
         std::vector<Attribute> attrs;
         if (getAttributes(tableName, attrs) != 0) return -1;
         if (rbfm.openFile(tableName, fileHandle) != 0) return -1;
+
+        // remove this tuple from any existing indexes before the record is gone
+        auto &ix = IndexManager::instance();
+
+        for (const auto &attr : indexedAttrs(tableName, attrs)) {
+            char buf[PAGE_SIZE];
+            if (rbfm.readAttribute(fileHandle, attrs, rid, attr.name, buf) != 0) continue;
+            if (buf[0] & 0x80) continue;
+            IXFileHandle ixFH;
+            if (ix.openFile(tableName + "_" + attr.name + ".idx", ixFH) != 0) continue;
+            ix.deleteEntry(ixFH, attr, buf + 1, rid);
+            ix.closeFile(ixFH);
+        }
+
         if (rbfm.deleteRecord(fileHandle, attrs, rid) != 0) {
             rbfm.closeFile(fileHandle);
             return -1;
@@ -366,12 +415,40 @@ namespace PeterDB {
         auto &rbfm = RecordBasedFileManager::instance();
         FileHandle fileHandle;
         std::vector<Attribute> attrs;
+
         if (getAttributes(tableName, attrs) != 0) return -1;
         if (rbfm.openFile(tableName, fileHandle) != 0) return -1;
+
+        // delete old index entries BEFORE update (record still has old values)
+        auto &ix = IndexManager::instance();
+        auto idx = indexedAttrs(tableName, attrs);
+        for (const auto &attr : idx) {
+            char buf[PAGE_SIZE];
+            if (rbfm.readAttribute(fileHandle, attrs, rid, attr.name, buf) != 0) continue;
+            if (buf[0] & 0x80) continue;
+            IXFileHandle ixFH;
+            if (ix.openFile(tableName + "_" + attr.name + ".idx", ixFH) != 0) continue;
+            ix.deleteEntry(ixFH, attr, buf + 1, rid);
+            ix.closeFile(ixFH);
+        }
+
         if (rbfm.updateRecord(fileHandle, attrs, data, rid) != 0) {
             rbfm.closeFile(fileHandle);
             return -1;
         }
+
+        // insert new index entries AFTER update succeeded (record now has new values)
+        for (const auto &attr : idx) {
+            char buf[PAGE_SIZE];
+            if (rbfm.readAttribute(fileHandle, attrs, rid, attr.name, buf) != 0) continue;
+            if (buf[0] & 0x80) continue;
+            IXFileHandle ixFH;
+            if (ix.openFile(tableName + "_" + attr.name + ".idx", ixFH) != 0) continue;
+            ix.insertEntry(ixFH, attr, buf + 1, rid);
+            ix.closeFile(ixFH);
+        }
+
+        rbfm.closeFile(fileHandle);
         return 0;
     }
 
@@ -453,11 +530,57 @@ namespace PeterDB {
 
     // QE IX related
     RC RelationManager::createIndex(const std::string &tableName, const std::string &attributeName){
-        return -1;
+        if (tableName == "Tables" || tableName == "Columns") return -1;
+
+        // verify the table exists and find the indexed attribute's metadata
+        std::vector<Attribute> attrs;
+        if (getAttributes(tableName, attrs) != 0) return -1;
+        auto attrIt = std::find_if(attrs.begin(), attrs.end(),
+            [&](const Attribute &a) { return a.name == attributeName; });
+        if (attrIt == attrs.end()) return -1;
+
+        // deterministic filename so destroyIndex/indexScan can find it from (table, attr)
+        std::string indexFileName = tableName + "_" + attributeName + ".idx";
+
+        auto &ix = IndexManager::instance();
+        if (ix.createFile(indexFileName) != 0) return -1;
+
+        // populate the new index with any tuples that already exist in the table
+        auto &rbfm = RecordBasedFileManager::instance();
+        FileHandle tableFH;
+        if (rbfm.openFile(tableName, tableFH) != 0) {
+            ix.destroyFile(indexFileName);
+            return -1;
+        }
+
+        IXFileHandle ixFH;
+        if (ix.openFile(indexFileName, ixFH) != 0) {
+            rbfm.closeFile(tableFH);
+            ix.destroyFile(indexFileName);
+            return -1;
+        }
+
+        RBFM_ScanIterator it;
+        std::vector<std::string> proj = {attributeName};
+        if (rbfm.scan(tableFH, attrs, "", NO_OP, nullptr, proj, it) == 0) {
+            RID rid;
+            char row[PAGE_SIZE];
+            while (it.getNextRecord(rid, row) != RBFM_EOF) {
+                if (row[0] & 0x80) continue;  // skip NULL values
+                ix.insertEntry(ixFH, *attrIt, row + 1, rid);
+            }
+            it.close();
+        }
+
+        ix.closeFile(ixFH);
+        rbfm.closeFile(tableFH);
+        return 0;
     }
 
     RC RelationManager::destroyIndex(const std::string &tableName, const std::string &attributeName){
-        return -1;
+        if (tableName == "Tables" || tableName == "Columns") return -1;
+        std::string indexFileName = tableName + "_" + attributeName + ".idx";
+        return IndexManager::instance().destroyFile(indexFileName);
     }
 
     // indexScan returns an iterator to allow the caller to go through qualified entries in index
@@ -468,8 +591,24 @@ namespace PeterDB {
                  bool lowKeyInclusive,
                  bool highKeyInclusive,
                  RM_IndexScanIterator &rm_IndexScanIterator){
-        return -1;
-    }
+
+        rm_IndexScanIterator.close();  // reset any prior state
+
+            std::vector<Attribute> attrs;
+            if (getAttributes(tableName, attrs) != 0) return -1;
+            auto attrIt = std::find_if(attrs.begin(), attrs.end(),
+                [&](const Attribute &a) { return a.name == attributeName; });
+            if (attrIt == attrs.end()) return -1;
+
+            std::string indexFileName = tableName + "_" + attributeName + ".idx";
+            auto &ix = IndexManager::instance();
+            if (ix.openFile(indexFileName, rm_IndexScanIterator.ixFileHandle) != 0) return -1;
+            rm_IndexScanIterator.isOpen = true;
+
+            return ix.scan(rm_IndexScanIterator.ixFileHandle, *attrIt,
+                        lowKey, highKey, lowKeyInclusive, highKeyInclusive,
+                        rm_IndexScanIterator.ixScanner);
+        }
 
 
     RM_IndexScanIterator::RM_IndexScanIterator() = default;
@@ -477,11 +616,16 @@ namespace PeterDB {
     RM_IndexScanIterator::~RM_IndexScanIterator() = default;
 
     RC RM_IndexScanIterator::getNextEntry(RID &rid, void *key){
-        return -1;
+        return ixScanner.getNextEntry(rid, key);
     }
 
     RC RM_IndexScanIterator::close(){
-        return -1;
+        ixScanner.close();
+        if (isOpen) {
+            IndexManager::instance().closeFile(ixFileHandle);
+            isOpen = false;
+        }
+        return 0;
     }
 
     // private helpers, return attribute lists of Tables/Columns
