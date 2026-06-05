@@ -1,5 +1,9 @@
 #include "src/include/qe.h"
+#include "src/include/rbfm.h"
 #include <cmath>
+#include <unordered_map>
+#include <vector>
+#include <cstring>
 
 namespace PeterDB {
     Filter::Filter(Iterator *input, const Condition &condition) {
@@ -31,7 +35,7 @@ namespace PeterDB {
         return (int)(fieldptr - (char *)tuple);
     }
 
-    int findAttrIndex(std::vector<Attribute> &attrs, std::string &fullName) {
+    int findAttrIndex(std::vector<Attribute> &attrs, const std::string &fullName) {
         for (int i = 0; i < (int)attrs.size(); i++) {
             if (attrs[i].name == fullName) {
                 return i;
@@ -145,24 +149,6 @@ namespace PeterDB {
         return compareValues(lhsptr, rhsptr, attrs[lhsidx].type, condition.op);
     }
 
-    RC Filter::getNextTuple(void *data) {
-        char buffer[PAGE_SIZE];
-        // get each tuple and check if it passes condition if not keep going
-        while (input->getNextTuple(buffer) != QE_EOF) {
-            if (checkCondition(buffer)) {
-                int n = getTupleSize(buffer, attrs);
-                memcpy(data, buffer, n);
-                return 0;
-            }
-        }
-        return -1;
-    }
-
-    RC Filter::getAttributes(std::vector<Attribute> &attrs) const {
-        attrs = this->attrs;
-        return 0;
-    }
-
     int projectTuple(void *inputTuple, std::vector<Attribute> &inputAttrs, std::vector<std::string> &projNames, std::vector<Attribute> &outAttrs, void *outputTuple) {
         // adapted from print record, instead it just checks for the attributes we need based
         // on index
@@ -200,7 +186,37 @@ namespace PeterDB {
         return 0;
     }
 
+    RC Filter::getNextTuple(void *data) {
+        char buffer[PAGE_SIZE];
+        // get each tuple and check if it passes condition if not keep going
+        while (input->getNextTuple(buffer) != QE_EOF) {
+            if (checkCondition(buffer)) {
+                int n = getTupleSize(buffer, attrs);
+                memcpy(data, buffer, n);
+                return 0;
+            }
+        }
+        return -1;
+    }
 
+    // basically figure out the biggest tuple so we don't ever overflow our chunks
+    int maxTupleSize(std::vector<Attribute> &attrs) {
+        int nullBytes = (int)ceil(attrs.size() / 8.0);
+        int sum = nullBytes;
+        for (int i = 0; i < (int)attrs.size(); i++) {
+            if (attrs[i].type == TypeVarChar) {
+                sum += 4 + attrs[i].length;
+            } else {
+                sum += attrs[i].length;
+            }
+        }
+        return sum;
+    }
+
+    RC Filter::getAttributes(std::vector<Attribute> &attrs) const {
+        attrs = this->attrs;
+        return 0;
+    }
 
     Project::Project(Iterator *input, const std::vector<std::string> &attrNames) {
         this->input = input;
@@ -239,7 +255,18 @@ namespace PeterDB {
     }
 
     BNLJoin::BNLJoin(Iterator *leftIn, TableScan *rightIn, const Condition &condition, const unsigned int numPages) {
-
+        this->leftIn = leftIn;
+        this->rightIn = rightIn;
+        this->condition = condition;
+        this->numPages = numPages;
+        leftIn->getAttributes(leftAttrs);
+        rightIn->getAttributes(rightAttrs);
+        joinedAttrs = leftAttrs;
+        joinedAttrs.insert(joinedAttrs.end(), rightAttrs.begin(), rightAttrs.end());
+        leftKeyidx = findAttrIndex(leftAttrs, condition.lhsAttr);
+        rightKeyidx = findAttrIndex(rightAttrs, condition.rhsAttr);
+        maxSize = maxTupleSize(leftAttrs);
+        leftEnd = false;
     }
 
     BNLJoin::~BNLJoin() {
@@ -247,11 +274,18 @@ namespace PeterDB {
     }
 
     RC BNLJoin::getNextTuple(void *data) {
+        // idea is load left blocks into hash make a hashmap of key -> vector of left rows with that key
+        // scan the right 
+        // for each tuple if the key is in hash, we build the tuple of left and right
+        // put it into queue to be used whenever they ask, but we should do this at the beginning in case we have leftover
+        // they want one so we pop and give it to them
+        // when our queue is empty we repeat the process with the next left block
         return -1;
     }
 
     RC BNLJoin::getAttributes(std::vector<Attribute> &attrs) const {
-        return -1;
+        attrs = this->joinedAttrs;
+        return 0;
     }
 
     INLJoin::INLJoin(Iterator *leftIn, IndexScan *rightIn, const Condition &condition) {

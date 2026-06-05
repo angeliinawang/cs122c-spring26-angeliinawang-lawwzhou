@@ -4,9 +4,12 @@
 #include <vector>
 #include <string>
 #include <limits>
+#include <unordered_map>
+
 
 #include "rm.h"
 #include "ix.h"
+#include "src/include/rbfm.h"
 
 namespace PeterDB {
 
@@ -200,6 +203,39 @@ namespace PeterDB {
 
     class BNLJoin : public Iterator {
         // Block nested-loop join operator
+    private:
+        Iterator *leftIn;
+        TableScan *rightIn;
+        Condition condition;
+        unsigned numPages;
+
+        // schema for attributes
+        std::vector<Attribute> leftAttrs;
+        std::vector<Attribute> rightAttrs;
+        std::vector<Attribute> joinedAttrs;
+
+        // keeping track the index of the attribute we are looking for
+        int leftKeyidx;
+        int rightKeyidx;
+
+        // left block hash, basically stores which rows have what key, the value is the tuple of that entry
+        std::unordered_map<std::string, std::vector<std::vector<char>>> leftDict;
+
+        // output we fill this whenever we find matches and then pull from it when needed
+        // need this bc they only pull one at a time so need to keep track
+        // we check this before anything to pop and also build before pushing into it
+        std::vector<std::vector<char>> output;
+
+        // flags to check
+        bool leftEnd; // out of left tuples
+
+        // need to make sure we don't overflow when getting chunks
+        int maxSize;
+        
+
+        bool loadLeftChunk();
+        void pushJoinedTuple(void *rightTuple);
+
     public:
         BNLJoin(Iterator *leftIn,            // Iterator of input R
                 TableScan *rightIn,           // TableScan Iterator of input S
