@@ -163,10 +163,56 @@ namespace PeterDB {
         return 0;
     }
 
+    int projectTuple(void *inputTuple, std::vector<Attribute> &inputAttrs, std::vector<std::string> &projNames, std::vector<Attribute> &outAttrs, void *outputTuple) {
+        // adapted from print record, instead it just checks for the attributes we need based
+        // on index
+        // basically just keep track of where we are in our output as we add the desired attributes
+        // then for every attribute we need, we find what index it's at, and then we check if its null,
+        // and then we just grab wahtever is there using getFieldptr based on its index
+        int outFields = outAttrs.size();
+        int nullBytes = (int)ceil(outFields / 8.0);
+        char *outBitptr = (char *)outputTuple;
+        char *outFieldptr = (char *)outputTuple + nullBytes;
+        memset(outBitptr, 0, nullBytes);
+        for (int i = 0; i < outFields; i++) {
+            int inIdx = findAttrIndex(inputAttrs, projNames[i]);
+            if (inIdx == -1) {
+                return -1;
+            }
+            char *inBitptr = (char *)inputTuple;
+            bool isNull = inBitptr[inIdx / 8] & (0x80 >> (inIdx % 8));
+            if (isNull) {
+                outBitptr[i / 8] |= (0x80 >> (i % 8));
+            } else {
+                void *src = getFieldPtr(inputTuple, inputAttrs, inIdx);
+                if (outAttrs[i].type == TypeVarChar) {
+                    unsigned len;
+                    memcpy(&len, src, 4);
+                    memcpy(outFieldptr, src, 4 + len);
+                    outFieldptr += 4 + len;
+                } 
+                else {
+                    memcpy(outFieldptr, src, outAttrs[i].length);
+                    outFieldptr += outAttrs[i].length;
+                }
+            }
+        }
+        return 0;
+    }
+
 
 
     Project::Project(Iterator *input, const std::vector<std::string> &attrNames) {
-
+        this->input = input;
+        this->projAttrs = attrNames;
+        input->getAttributes(this->fullAttrs);  
+        // build the output attributes since it'll never change
+        for (int i = 0; i < projAttrs.size(); i++) {
+            int idx = findAttrIndex(fullAttrs, projAttrs[i]);
+            if (idx != -1) {
+                outputAttrs.push_back(fullAttrs[idx]);
+            }
+        }
     }
 
     Project::~Project() {
@@ -174,11 +220,22 @@ namespace PeterDB {
     }
 
     RC Project::getNextTuple(void *data) {
+        char buffer[PAGE_SIZE];
+        // get each tuple and project it
+        while (input->getNextTuple(buffer) != QE_EOF) {
+            int valid = projectTuple(buffer, fullAttrs, projAttrs, outputAttrs, data);
+            // siutation where the projected attribute isn't in the full attributes
+            if (valid == -1) {
+                return -1;
+            }
+            return 0;
+        }
         return -1;
     }
 
     RC Project::getAttributes(std::vector<Attribute> &attrs) const {
-        return -1;
+        attrs = this->outputAttrs;
+        return 0;
     }
 
     BNLJoin::BNLJoin(Iterator *leftIn, TableScan *rightIn, const Condition &condition, const unsigned int numPages) {

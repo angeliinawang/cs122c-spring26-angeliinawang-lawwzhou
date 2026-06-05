@@ -181,6 +181,12 @@ namespace PeterDB {
 
     class Project : public Iterator {
         // Projection operator
+    private:
+        Iterator *input;
+        std::vector<std::string> projAttrs; // what attributes we need to project
+        std::vector<Attribute> fullAttrs; // the whole scehma
+        std::vector<Attribute> outputAttrs; // our output in attribute form
+    
     public:
         Project(Iterator *input,                                // Iterator of input R
                 const std::vector<std::string> &attrNames);     // std::vector containing attribute names
