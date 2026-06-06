@@ -254,6 +254,26 @@ namespace PeterDB {
 
     class INLJoin : public Iterator {
         // Index nested-loop join operator
+    private:
+        Iterator *leftIn;
+        IndexScan *rightIn;
+        Condition condition;
+
+        // schemas
+        std::vector<Attribute> leftAttrs;
+        std::vector<Attribute> rightAttrs;
+        std::vector<Attribute> joinedAttrs;
+
+        // join-attribute positions
+        int leftKeyIdx;
+        int rightKeyIdx;
+
+        // the current outer (left) tuple we're joining against, and whether the
+        // right-side index scan is currently positioned for it
+        char currentLeft[PAGE_SIZE];
+        bool hasCurrentLeft;
+        bool leftEnd;
+
     public:
         INLJoin(Iterator *leftIn,           // Iterator of input R
                 IndexScan *rightIn,          // IndexScan Iterator of input S
