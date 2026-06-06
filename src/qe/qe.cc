@@ -436,7 +436,21 @@ namespace PeterDB {
     }
 
     INLJoin::INLJoin(Iterator *leftIn, IndexScan *rightIn, const Condition &condition) {
+        this->leftIn = leftIn;
+        this->rightIn = rightIn;
+        this->condition = condition;
 
+        leftIn->getAttributes(leftAttrs);
+        rightIn->getAttributes(rightAttrs);
+
+        joinedAttrs = leftAttrs;
+        joinedAttrs.insert(joinedAttrs.end(), rightAttrs.begin(), rightAttrs.end());
+
+        leftKeyIdx = findAttrIndex(leftAttrs, condition.lhsAttr);
+        rightKeyIdx = findAttrIndex(rightAttrs, condition.rhsAttr);
+
+        hasCurrentLeft = false;
+        leftEnd = false;
     }
 
     INLJoin::~INLJoin() {
@@ -444,11 +458,55 @@ namespace PeterDB {
     }
 
     RC INLJoin::getNextTuple(void *data) {
-        return -1;
+        char rightBuffer[PAGE_SIZE];
+        while (true) {
+            if (!hasCurrentLeft) {
+                if (leftEnd) return QE_EOF;
+                RC rc = leftIn->getNextTuple(currentLeft);
+                if (rc == QE_EOF) { leftEnd = true; return QE_EOF; }
+
+                // skip tuple if NULL join key
+                void *leftKey = getFieldPtr(currentLeft, leftAttrs, leftKeyIdx);
+                if (leftKey == nullptr) continue;
+
+                // reset index iterator on the right side based on join operator
+                switch (condition.op) {
+                    case EQ_OP:
+                        rightIn->setIterator(leftKey, leftKey, true, true);
+                        break;
+                    case LT_OP:
+                        rightIn->setIterator(nullptr, leftKey, true, false);
+                        break;
+                    case LE_OP:
+                        rightIn->setIterator(nullptr, leftKey, true, true);
+                        break;
+                    case GT_OP:
+                        rightIn->setIterator(leftKey, nullptr, false, true);
+                        break;
+                    case GE_OP:
+                        rightIn->setIterator(leftKey, nullptr, true, true);
+                        break;
+                    default:
+                        rightIn->setIterator(nullptr, nullptr, true, true);
+                        break;
+                }
+                hasCurrentLeft = true;
+            }
+
+            RC rc = rightIn->getNextTuple(rightBuffer);
+            if (rc == QE_EOF) {
+                hasCurrentLeft = false;
+                continue;
+            }
+
+            concatTuples(currentLeft, rightBuffer, leftAttrs, rightAttrs, data);
+            return 0;
+        }
     }
 
     RC INLJoin::getAttributes(std::vector<Attribute> &attrs) const {
-        return -1;
+        attrs = this->joinedAttrs;
+        return 0;
     }
 
     GHJoin::GHJoin(Iterator *leftIn, Iterator *rightIn, const Condition &condition, const unsigned int numPartitions) {
