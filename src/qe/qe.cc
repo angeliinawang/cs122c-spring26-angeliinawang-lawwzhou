@@ -369,7 +369,7 @@ namespace PeterDB {
 
         char outputBuffer[PAGE_SIZE];
         for (std::vector<char> &leftTuple : found->second) {
-            concatTuples(leftTuple.data(), rightTuple, leftAttrs, rightAttrs, output);
+            concatTuples(leftTuple.data(), rightTuple, leftAttrs, rightAttrs, outputBuffer);
             int tupleSize = getTupleSize(outputBuffer, joinedAttrs);
             std::vector<char> joinedTuples(outputBuffer, outputBuffer + tupleSize);
             output.push_back(joinedTuples);
@@ -402,7 +402,32 @@ namespace PeterDB {
         // put it into queue to be used whenever they ask, but we should do this at the beginning in case we have leftover
         // they want one so we pop and give it to them
         // when our queue is empty we repeat the process with the next left block
-        return -1;
+        char rightTuple[PAGE_SIZE];
+
+        // if the output is empty we load a new chunk
+        while (output.empty()) {
+            if (leftDict.empty()) {
+                if (!loadLeftChunk()) {
+                    return -1;
+                }
+                rightIn->setIterator();
+            }
+            // keep getting right tuples when we reach the end, that means we need a new left block
+            RC rc = rightIn->getNextTuple(rightTuple);
+            if (rc == -1) {
+                leftDict.clear();
+                if (leftEnd) {
+                    return -1;
+                }
+                continue;
+            }
+            // this adds new output or doesn't if not then loop runs again
+            pushJoinedTuple(rightTuple);
+        }
+        // when we have output send it one at a time
+        memcpy(data, output.front().data(), output.front().size());
+        output.erase(output.begin());
+        return 0;
     }
 
     RC BNLJoin::getAttributes(std::vector<Attribute> &attrs) const {
