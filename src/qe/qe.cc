@@ -186,6 +186,59 @@ namespace PeterDB {
         return 0;
     }
 
+    int concatTuples(void *leftTuple, void *rightTuple, std::vector<Attribute> &leftAttrs, std::vector<Attribute> &rightAttrs, void *outputTuple) {
+        // asame thing as project tuple we just do it on left and right
+        int outFields = leftAttrs.size() + rightAttrs.size();
+        int nullBytes = (int)ceil(outFields / 8.0);
+        char *outBitptr = (char *)outputTuple;
+        char *outFieldptr = (char *)outputTuple + nullBytes;
+        memset(outBitptr, 0, nullBytes);
+        for (int i = 0; i < (int)leftAttrs.size(); i++) {
+            char *inBitptr = (char *)leftTuple;
+            bool isNull = inBitptr[i / 8] & (0x80 >> (i % 8));
+            if (isNull) {
+                outBitptr[i / 8] |= (0x80 >> (i % 8));
+            } 
+            else {
+                void *src = getFieldPtr(leftTuple, leftAttrs, i);
+                if (leftAttrs[i].type == TypeVarChar) {
+                    unsigned len;
+                    memcpy(&len, src, 4);
+                    memcpy(outFieldptr, src, 4 + len);
+                    outFieldptr += 4 + len;
+                } 
+                else {
+                    memcpy(outFieldptr, src, leftAttrs[i].length);
+                    outFieldptr += leftAttrs[i].length;
+                }
+            }
+        }
+        int rightOffset = (int)leftAttrs.size();
+        for (int i = 0; i < (int)rightAttrs.size(); i++) {
+            int outIdx = rightOffset + i;
+            char *inBitptr = (char *)rightTuple;
+            bool isNull = inBitptr[i / 8] & (0x80 >> (i % 8));
+            if (isNull) {
+                outBitptr[outIdx / 8] |= (0x80 >> (outIdx % 8));
+            }
+            else {
+                void *src = getFieldPtr(rightTuple, rightAttrs, i);
+                if (rightAttrs[i].type == TypeVarChar) {
+                    unsigned len;
+                    memcpy(&len, src, 4);
+                    memcpy(outFieldptr, src, 4 + len);
+                    outFieldptr += 4 + len;
+                } 
+                else {
+                    memcpy(outFieldptr, src, rightAttrs[i].length);
+                    outFieldptr += rightAttrs[i].length;
+                }
+            }
+        }
+        return 0;
+    }
+    
+
     RC Filter::getNextTuple(void *data) {
         char buffer[PAGE_SIZE];
         // get each tuple and check if it passes condition if not keep going
@@ -252,6 +305,75 @@ namespace PeterDB {
     RC Project::getAttributes(std::vector<Attribute> &attrs) const {
         attrs = this->outputAttrs;
         return 0;
+    }
+
+    bool BNLJoin::loadLeftChunk() {
+        int bytesUsed = 0;
+        int chunkLimit = numPages * PAGE_SIZE;
+        char leftTuple[PAGE_SIZE]; // stores the current tuple we got
+        leftDict.clear(); // get rid of the old stuff since we are doing new chunk
+        while (!leftEnd) {
+            if (bytesUsed + maxSize > chunkLimit) {
+                // if the next tuple is going to push us over we just stop
+                break;
+            }
+            // get the next tuple, make sure it's not the end
+            RC rc = leftIn->getNextTuple(leftTuple);
+            if (rc == QE_EOF) {
+                leftEnd = true;
+                // means we have enough in this block
+                break;
+            }
+            // get the size of the tuple so we know how much data to copy
+            int tupleSize = getTupleSize(leftTuple, leftAttrs);
+            // keyptr to point to the field we are trying to join on
+            void *keyPtr = getFieldPtr(leftTuple, leftAttrs, leftKeyidx);
+            std::string key;
+            if (leftAttrs[leftKeyidx].type == TypeVarChar) {
+                unsigned keyLen;
+                memcpy(&keyLen, keyPtr, 4);
+                key.assign((char *) keyPtr, 4 + keyLen);
+            }
+            else {
+                key.assign((char *) keyPtr, leftAttrs[leftKeyidx].length);
+            }
+
+            // can't directly assign the value so make a temp and grab the left tuple stuff and then push it
+            std::vector<char> temp(tupleSize);
+            memcpy(temp.data(), leftTuple, tupleSize);
+            leftDict[key].push_back(temp);
+            bytesUsed += tupleSize;
+        }
+        // if its empty it means we reached thee nd
+        return !leftDict.empty();
+    }
+
+    void BNLJoin::pushJoinedTuple(void *rightTuple) {
+        // basically the same as how we got the left tuple, now we just look up with left
+        // and then if there is a match we concat and then sned it
+        void *keyPtr = getFieldPtr(rightTuple, rightAttrs, rightKeyidx);
+        std::string key;
+        if (rightAttrs[rightKeyidx].type == TypeVarChar) {
+            unsigned keyLen;
+            memcpy(&keyLen, keyPtr, 4);
+            key.assign((char *) keyPtr, 4 + keyLen);
+        }
+        else {
+            key.assign((char *) keyPtr, rightAttrs[rightKeyidx].length);
+        }
+
+        auto found = leftDict.find(key);
+        if (found == leftDict.end()) {
+            return;
+        }
+
+        char outputBuffer[PAGE_SIZE];
+        for (std::vector<char> &leftTuple : found->second) {
+            concatTuples(leftTuple.data(), rightTuple, leftAttrs, rightAttrs, output);
+            int tupleSize = getTupleSize(outputBuffer, joinedAttrs);
+            std::vector<char> joinedTuples(outputBuffer, outputBuffer + tupleSize);
+            output.push_back(joinedTuples);
+        }
     }
 
     BNLJoin::BNLJoin(Iterator *leftIn, TableScan *rightIn, const Condition &condition, const unsigned int numPages) {
