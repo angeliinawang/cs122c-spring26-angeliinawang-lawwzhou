@@ -5,6 +5,8 @@
 #include <string>
 #include <limits>
 #include <unordered_map>
+#include <deque>
+
 
 
 #include "rm.h"
@@ -224,7 +226,7 @@ namespace PeterDB {
         // output we fill this whenever we find matches and then pull from it when needed
         // need this bc they only pull one at a time so need to keep track
         // we check this before anything to pop and also build before pushing into it
-        std::vector<std::vector<char>> output;
+        std::deque<std::vector<char>> output;
 
         // flags to check
         bool leftEnd; // out of left tuples
@@ -309,7 +311,7 @@ namespace PeterDB {
         // current bucket pair
         int currentPart;
 
-        std::vector<std::vector<char>> output;
+        std::deque<std::vector<char>> output;
         std::string leftPartName(int i);
         std::string rightPartName(int i);
         

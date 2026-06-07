@@ -428,7 +428,7 @@ namespace PeterDB {
         }
         // when we have output send it one at a time
         memcpy(data, output.front().data(), output.front().size());
-        output.erase(output.begin());
+        output.pop_front();
         return 0;
     }
 
@@ -663,7 +663,7 @@ namespace PeterDB {
         }
         // if the output still has stuff it skips and just does this regardless
         memcpy(data, output.front().data(), output.front().size());
-        output.erase(output.begin());
+        output.pop_front();
         return 0;
 
     }
