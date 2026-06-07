@@ -525,12 +525,80 @@ namespace PeterDB {
         return -1;
     }
 
-    Aggregate::Aggregate(Iterator *input, const Attribute &aggAttr, AggregateOp op) {
+    static std::string aggregateOpName(AggregateOp op) {
+        switch (op) {
+            case MIN:
+                return "MIN";
+            case MAX:
+                return "MAX";
+            case COUNT:
+                return "COUNT";
+            case SUM:
+                return "SUM";
+            case AVG:
+                return "AVG";
+        }
+        return "";
+    }
 
+    static float readNumeric(void *fieldPtr, AttrType type) {
+        if (type == TypeInt) {
+            int iv;
+            memcpy(&iv, fieldPtr, 4);
+            return (float)iv;
+        }
+
+        float fv;
+        memcpy(&fv, fieldPtr, 4);
+        return fv;
+    }
+
+    Aggregate::Aggregate(Iterator *input, const Attribute &aggAttr, AggregateOp op) {
+        this->input =input;
+        this->aggAttr = aggAttr;
+        this->op = op;
+        this->isGroup = false;
+
+        input->getAttributes(inputAttrs);
+        aggAttrIdx = findAttrIndex(inputAttrs, aggAttr.name);
+        groupAttrIdx = -1;
+
+        Attribute out;
+        out.name = aggregateOpName(op) + "(" + aggAttr.name + ")";
+        out.type = TypeReal;
+        out.length = 4;
+        outputAttrs.push_back(out);
+
+        computed = false;
+        emitted = false;
+        hasAny = false;
+        minV = maxV = sumV = countV = 0;
+        groupCursor = 0;
     }
 
     Aggregate::Aggregate(Iterator *input, const Attribute &aggAttr, const Attribute &groupAttr, AggregateOp op) {
+        this->input =input;
+        this->aggAttr = aggAttr;
+        this->groupAttr = groupAttr;
+        this->op = op;
+        this->isGroup = true;
 
+        input->getAttributes(inputAttrs);
+        aggAttrIdx = findAttrIndex(inputAttrs, aggAttr.name);
+        groupAttrIdx = findAttrIndex(inputAttrs, groupAttr.name);
+
+        outputAttrs.push_back(groupAttr);
+        Attribute outAgg;
+        outAgg.name = aggregateOpName(op) + "(" + aggAttr.name + ")";
+        outAgg.type = TypeReal;
+        outAgg.length = 4;
+        outputAttrs.push_back(outAgg);
+
+        computed = false;
+        emitted = false;
+        hasAny = false;
+        minV = maxV = sumV = countV = 0;
+        groupCursor = 0;
     }
 
     Aggregate::~Aggregate() {
@@ -538,10 +606,132 @@ namespace PeterDB {
     }
 
     RC Aggregate::getNextTuple(void *data) {
-        return -1;
+        // group by path
+        if (isGroup) {
+            // drain input on first call, accumulate per group
+            if (!computed) {
+                char buffer[PAGE_SIZE];
+                while (input->getNextTuple(buffer) != QE_EOF) {
+                    void *gp = getFieldPtr(buffer, inputAttrs, groupAttrIdx);
+                    if (gp == nullptr) continue;
+
+                    int gLen;
+                    if (groupAttr.type == TypeVarChar) {
+                        unsigned slen;
+                        memcpy(&slen, gp, 4);
+                        gLen = 4 + slen;
+                    } else {
+                        gLen = 4;
+                    }
+
+                    std::string key((char *) gp, gLen);
+
+                    auto it = groupMap.find(key);
+                    if (it == groupMap.end()) {
+                        GroupAccum acc;
+                        acc.keyBytes.assign((char *) gp, (char *) gp + gLen);
+                        groupMap[key] = acc;
+                        groupOrder.push_back(key);
+                        it = groupMap.find(key);
+                    }
+
+                    GroupAccum &acc = it->second;
+
+                    void *fp = getFieldPtr(buffer, inputAttrs, aggAttrIdx);
+                    if (fp == nullptr) continue;
+
+                    float v = readNumeric(fp, aggAttr.type);
+                    if (!acc.hasAny) {
+                        acc.minV = acc.maxV = v;
+                        acc.hasAny = true;
+                    } else {
+                        if (v < acc.minV) {
+                           acc.minV = v;
+                        }
+                        if (v > acc.maxV) {
+                            acc.maxV = v;
+                        }
+                    }
+
+                    acc.sumV += v;
+                    acc.countV++;
+                }
+
+                computed = true;
+            }
+
+            if (groupCursor >= groupOrder.size()) {
+                return QE_EOF;
+            }
+
+            GroupAccum &acc = groupMap[groupOrder[groupCursor++]];
+
+            char *out = (char *) data;
+            out[0] = 0;
+            char *p = out + 1;
+            memcpy(p, acc.keyBytes.data(), acc.keyBytes.size());
+            p += acc.keyBytes.size();
+
+            float result = 0;
+            switch (op) {
+                case MIN:
+                    result = acc.minV; break;
+                case MAX:
+                    result = acc.maxV; break;
+                case COUNT:
+                    result = acc.countV; break;
+                case SUM:
+                    result = acc.sumV; break;
+                case AVG:
+                    result = acc.countV > 0 ? acc.sumV / acc.countV : 0; break;
+            }
+
+            memcpy(p, &result, 4);
+            return 0;
+        }
+
+        // single result
+        if (!computed) {
+            char buffer[PAGE_SIZE];
+            while (input->getNextTuple(buffer) != QE_EOF) {
+                void *fp = getFieldPtr(buffer, inputAttrs, aggAttrIdx);
+                if (fp == nullptr) continue;  // skip NULL aggregate values
+                float v = readNumeric(fp, aggAttr.type);
+                if (!hasAny) { minV = maxV = v; hasAny = true; }
+                else {
+                    if (v < minV) minV = v;
+                    if (v > maxV) maxV = v;
+                }
+                sumV += v;
+                countV++;
+            }
+            computed = true;
+        }
+
+        if (emitted) return QE_EOF;
+        emitted = true;
+
+        char *out = (char *) data;
+        // empty input: NULL aggregate for min/max/sum/avg, 0 for count
+        if (!hasAny && op != COUNT) {
+            out[0] = 0x80;
+            return 0;
+        }
+        out[0] = 0;
+        float result = 0;
+        switch (op) {
+            case MIN:   result = minV; break;
+            case MAX:   result = maxV; break;
+            case COUNT: result = countV; break;
+            case SUM:   result = sumV; break;
+            case AVG:   result = countV > 0 ? sumV / countV : 0; break;
+        }
+        memcpy(out + 1, &result, 4);
+        return 0;
     }
 
     RC Aggregate::getAttributes(std::vector<Attribute> &attrs) const {
-        return -1;
+        attrs = this->outputAttrs;
+        return 0;
     }
 } // namespace PeterDB

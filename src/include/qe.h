@@ -308,6 +308,33 @@ namespace PeterDB {
 
     class Aggregate : public Iterator {
         // Aggregation operator
+    private:
+        Iterator *input;
+        Attribute aggAttr;
+        Attribute groupAttr;
+        AggregateOp op;
+        bool isGroup;
+
+        std::vector<Attribute> inputAttrs;
+        std::vector<Attribute> outputAttrs;
+        int aggAttrIdx;
+        int groupAttrIdx;
+
+        bool computed;
+        bool emitted;
+        bool hasAny;
+        float minV, maxV, sumV, countV;
+
+        struct GroupAccum {
+            std::vector<char> keyBytes;
+            float minV = 0, maxV = 0, sumV = 0, countV = 0;
+            bool hasAny = false;
+        };
+        
+        std::unordered_map<std::string, GroupAccum> groupMap;
+        std::vector<std::string> groupOrder;
+        size_t groupCursor;
+
     public:
         // Mandatory
         // Basic aggregation
