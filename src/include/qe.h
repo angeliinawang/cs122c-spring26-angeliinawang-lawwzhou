@@ -291,6 +291,30 @@ namespace PeterDB {
     // 10 extra-credit points
     class GHJoin : public Iterator {
         // Grace hash join operator
+    private:
+        Iterator *leftIn, *rightIn;
+        Condition condition;
+        unsigned numPartitions;
+
+        std::vector<Attribute> leftAttrs;
+        std::vector<Attribute> rightAttrs;
+        std::vector<Attribute> joinedAttrs;
+        int leftKeyidx, rightKeyidx;
+        int joinId;
+        std::vector<std::string> partitionTables;
+
+        // becomes true when we finish writign buckets to disk
+        bool partitioned;
+
+        // current bucket pair
+        int currentPart;
+
+        std::vector<std::vector<char>> output;
+        std::string leftPartName(int i);
+        std::string rightPartName(int i);
+        
+        void partition();
+        void probe(int i);
     public:
         GHJoin(Iterator *leftIn,               // Iterator of input R
                Iterator *rightIn,               // Iterator of input S

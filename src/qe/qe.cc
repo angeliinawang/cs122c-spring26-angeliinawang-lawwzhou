@@ -1,6 +1,8 @@
 #include "src/include/qe.h"
 #include "src/include/rbfm.h"
 #include <cmath>
+#include <cstddef>
+#include <string>
 #include <unordered_map>
 #include <vector>
 #include <cstring>
@@ -509,20 +511,166 @@ namespace PeterDB {
         return 0;
     }
 
+    std::string makeJoinKey(void *keyPtr, const Attribute &attr) {
+        // making the bytes a string to use as a key
+        if (attr.type == TypeVarChar) {
+            unsigned len;
+            memcpy(&len, keyPtr, 4);
+            return std::string((char *)keyPtr, 4 + len);
+        }
+        return std::string((char *)keyPtr, attr.length);
+    }
+    int partitionIndex(const std::string &key, unsigned numPartitions) {
+        // partioning the buckets, find out which one key belongs in
+        std::size_t h = std::hash<std::string>{}(key);
+        return (int)(h % numPartitions);
+    }
+
+    std::string GHJoin::leftPartName(int i) {
+        return "left_join" + std::to_string(joinId) + "_" + std::to_string(i);
+    }
+    std::string GHJoin::rightPartName(int i) {
+        return "right_join" + std::to_string(joinId) + "_" + std::to_string(i);
+    }
+
+    void GHJoin::partition() {
+        // basically take everything and partition them into thie rbuckets
+        auto &rm = RelationManager::instance();
+        char buffer[PAGE_SIZE];
+
+        // make the tmporary tables bc we are supposed to make partitions into rbfm files
+        for (unsigned i = 0; i < numPartitions; i++) {
+            std::string leftName = leftPartName(i);
+            std::string rightName = rightPartName(i);
+            rm.createTable(leftName, leftAttrs);
+            rm.createTable(rightName, rightAttrs);
+            partitionTables.push_back(leftName);
+            partitionTables.push_back(rightName);
+        }
+
+        // partition left and then partition right into theor buckets
+        while (leftIn->getNextTuple(buffer) != -1) {
+            void *keyPtr = getFieldPtr(buffer, leftAttrs, leftKeyidx);
+            if (keyPtr == nullptr) {
+                continue; // we can't join on nulls
+            }
+            std::string key = makeJoinKey(keyPtr, leftAttrs[leftKeyidx]);
+            int partition = partitionIndex(key, numPartitions);
+            RID rid;
+            std::string name = leftPartName(partition);
+            rm.insertTuple(name, buffer, rid);
+        }
+
+        while (rightIn->getNextTuple(buffer) != -1) {
+            void *keyPtr = getFieldPtr(buffer, rightAttrs, rightKeyidx);
+            if (keyPtr == nullptr) {
+                continue; // we can't join on nulls
+            }
+            std::string key = makeJoinKey(keyPtr, rightAttrs[rightKeyidx]);
+            int partition = partitionIndex(key, numPartitions);
+            RID rid;
+            std::string name = rightPartName(partition);
+            rm.insertTuple(name, buffer, rid);
+        }
+
+        partitioned = true;
+    }
+
+    void GHJoin::probe(int i) {
+        // read all the tuples from the left in memory, then scan from right to concat when there are matches
+        auto &rm = RelationManager::instance();
+        std::unordered_map<std::string, std::vector<std::vector<char>>> map;
+
+        char buffer[PAGE_SIZE];
+
+        // scna the left tbale and make the hashmap
+        std::string tableName = leftPartName(i);
+        TableScan leftScan(rm, tableName);
+        while (leftScan.getNextTuple(buffer) != QE_EOF) {
+            void *keyPtr = getFieldPtr(buffer, leftAttrs, leftKeyidx);
+            if (keyPtr == nullptr) {
+                continue;
+            } 
+            std::string key = makeJoinKey(keyPtr, leftAttrs[leftKeyidx]);
+            int tupleSize = getTupleSize(buffer, leftAttrs);
+            std::vector<char> tuple(buffer, (char *)buffer + tupleSize);
+            map[key].push_back(tuple);        
+        }
+
+        // use the right scan to probe the hashmap for matches
+
+        TableScan rightScan(rm, rightPartName(i));
+        char outBuffer[PAGE_SIZE];
+        while (rightScan.getNextTuple(buffer) != QE_EOF) {
+            void *keyPtr = getFieldPtr(buffer, rightAttrs, rightKeyidx);
+            if (keyPtr == nullptr) continue;
+            std::string key = makeJoinKey(keyPtr, rightAttrs[rightKeyidx]);
+            auto it = map.find(key);
+            if (it == map.end()) continue;
+            for (std::vector<char> &leftTuple : it->second) {
+                concatTuples(leftTuple.data(), buffer, leftAttrs, rightAttrs, outBuffer);
+                int tupleSize = getTupleSize(outBuffer, joinedAttrs);
+                std::vector<char> tuple(outBuffer, (char *)outBuffer + tupleSize);
+                output.push_back(tuple);
+            }
+        }
+    }
+
     GHJoin::GHJoin(Iterator *leftIn, Iterator *rightIn, const Condition &condition, const unsigned int numPartitions) {
+        this->leftIn = leftIn;
+        this->rightIn = rightIn;
+        this->condition = condition;
+        this->numPartitions = numPartitions;
+
+        leftIn->getAttributes(leftAttrs);
+        rightIn->getAttributes(rightAttrs);
+
+        joinedAttrs = leftAttrs;
+        joinedAttrs.insert(joinedAttrs.end(), rightAttrs.begin(), rightAttrs.end());
+
+        leftKeyidx = findAttrIndex(leftAttrs, condition.lhsAttr);
+        rightKeyidx = findAttrIndex(rightAttrs, condition.rhsAttr);
+
+        // all the gh join objects need to share this so they create different files
+        static int nextJoinId = 1;
+        joinId = nextJoinId++;
+
+        partitioned = false;
+        currentPart = 0;
 
     }
 
     GHJoin::~GHJoin() {
-
+        auto &rm = RelationManager::instance();
+        for (const auto &name : partitionTables) {
+            rm.deleteTable(name);
+        }
     }
 
     RC GHJoin::getNextTuple(void *data) {
-        return -1;
+        // partition if it isnt
+        if (!partitioned) {
+            partition();
+        }
+
+        // same thing as the other join just keep giving tuples until you're out
+        while (output.empty()) {
+            if (currentPart >= (int)numPartitions) {
+                return -1;
+            }
+            probe(currentPart);
+            currentPart++;
+        }
+        // if the output still has stuff it skips and just does this regardless
+        memcpy(data, output.front().data(), output.front().size());
+        output.erase(output.begin());
+        return 0;
+
     }
 
     RC GHJoin::getAttributes(std::vector<Attribute> &attrs) const {
-        return -1;
+        attrs = joinedAttrs;
+        return 0;
     }
 
     static std::string aggregateOpName(AggregateOp op) {
